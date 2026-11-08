@@ -107,4 +107,7 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-MIT
+MIT. Third-party material and external tools are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+This project is not affiliated with, endorsed by, or sponsored by Adobe. Adobe, Lightroom and InDesign are
+either registered trademarks or trademarks of Adobe in the United States and/or other countries.
