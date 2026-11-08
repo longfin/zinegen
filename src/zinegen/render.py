@@ -84,7 +84,7 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     icc_uri = Path(cinfo["icc"]).resolve().as_uri() if cinfo["icc"] else None
     html = tpl.render(book=book, pages=pages, files={k: Path(v).resolve().as_uri() for k, v in files.items()},
                       W=book.trim_w, H=book.trim_h, B=book.bleed, fonts=book.fonts, type=book.type,
-                      icc=icc_uri, marks=book.raw.get("marks", True) if marks is None else marks,
+                      icc=icc_uri, marks=book.marks if marks is None else marks,
                       font_faces=font_faces([book.fonts["body"], book.fonts["caption"], book.fonts["title"]]))
     book.out_dir.mkdir(parents=True, exist_ok=True)
     html_path = book.out_dir / "interior.html"
@@ -99,7 +99,7 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     rep["html"] = str(html_path)
     (book.out_dir / "report.json").write_text(json.dumps(rep, indent=2, ensure_ascii=False))
     if log:
-        log(f"wrote {pdf_path} ({pdf_path.stat().st_size // 1024} KB), {rep['pages']} pages, {len(rep['warnings'])} warnings")
+        log(f"wrote {pdf_path} ({pdf_path.stat().st_size // 1024} KB), {rep['pages']} pages, {len(rep['issues'])} issues")
     return rep
 
 

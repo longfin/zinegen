@@ -41,8 +41,9 @@ def zg_spec_help() -> str:
         "spread-full": "photo, focal (occupies 2 pages, starts on a left page)",
         "spread-margin": "photo, caption? (occupies 2 pages)",
     }
-    lines += [f"{k}: {spec.TEMPLATES[k][2]} — {fields[k]}" for k in spec.TEMPLATES]
-    lines += ["", "# top-level keys", "title, trim {preset|width_mm,height_mm}, bleed_mm, binding, paper {caliper_um}, "
+    lines += [f"{k}: {spec.TEMPLATES[k][1]} — {fields[k]}" for k in spec.TEMPLATES]
+    lines += ["every page item may carry `note` (free text, ignored by the renderer)"]
+    lines += ["", "# top-level keys (book.yaml must start with `version: 1`; unknown keys are rejected)", "title, trim {preset|width_mm,height_mm}, bleed_mm, binding, paper {caliper_um}, "
               "margins_mm {top,bottom,inside,outside}, fonts {body,caption,title}, type {body_pt,caption_pt,title_pt}, "
               "page_numbers, marks, output {standard pdf/x-1a|pdf/x-4, icc, intent, jpeg_quality}, source {album_id,size}, pages[]"]
     return "\n".join(lines)
@@ -115,8 +116,7 @@ def zg_render(book: str) -> str:
     from . import render
     b = _book(book)
     rep = render.render(b)
-    low = [i for i in rep["images"] if i["level"] != "ok"]
-    return json.dumps({"pdf": rep["pdf"], "pages": rep["pages"], "warnings": rep["warnings"], "low_res": low}, ensure_ascii=False)
+    return json.dumps({"pdf": rep["pdf"], "pages": rep["pages"], "issues": rep["issues"]}, ensure_ascii=False)
 
 
 @mcp.tool()

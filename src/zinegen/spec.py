@@ -1,24 +1,35 @@
-"""Book spec (book.yaml): load, validate, normalise. The agent edits this file; everything else is derived."""
+"""Book spec (book.yaml): load, validate against the JSON Schema, normalise.
+
+The agent edits this file; everything else is derived. Format version 1 (`version: 1`), schema in
+`schema/book.schema.json`. Unknown keys are errors so that typos never silently disappear.
+"""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from importlib.resources import files
 from pathlib import Path
 
+import jsonschema
 import yaml
 
-from .presets import BINDINGS, resolve_trim
+from .issues import Issue
+from .presets import BINDINGS, resolve_trim, round_up_pages
+
+SPEC_VERSION = 1
+SCHEMA = json.loads((files("zinegen") / "schema" / "book.schema.json").read_text())
 
 TEMPLATES = {
-    # name: (pages occupied, needs photo(s), description)
-    "title": (1, 0, "제목 페이지"),
-    "blank": (1, 0, "빈 페이지"),
-    "text": (1, 0, "본문 텍스트 페이지(서문, 에세이)"),
-    "colophon": (1, 0, "판권면"),
-    "full-bleed": (1, 1, "사진 한 장 전면 재단"),
-    "margin": (1, 1, "사진 한 장을 여백 안에 맞춤 + 캡션"),
-    "pair": (1, 2, "사진 두 장을 한 페이지에 나란히(가로 또는 세로 배치)"),
-    "spread-full": (2, 1, "사진 한 장을 펼침 전면 재단(왼쪽 페이지에서 시작)"),
-    "spread-margin": (2, 1, "사진 한 장을 펼침 여백 안에(왼쪽 페이지에서 시작)"),
+    # name: (pages occupied, description)
+    "title": (1, "제목 페이지"),
+    "blank": (1, "빈 페이지"),
+    "text": (1, "본문 텍스트 페이지(서문, 에세이)"),
+    "colophon": (1, "판권면"),
+    "full-bleed": (1, "사진 한 장 전면 재단"),
+    "margin": (1, "사진 한 장을 여백 안에 맞춤 + 캡션"),
+    "pair": (1, "사진 두 장을 한 페이지에 나란히(가로 또는 세로 배치)"),
+    "spread-full": (2, "사진 한 장을 펼침 전면 재단(왼쪽 페이지에서 시작)"),
+    "spread-margin": (2, "사진 한 장을 펼침 여백 안에(왼쪽 페이지에서 시작)"),
 }
 
 DEFAULTS = {
@@ -28,9 +39,14 @@ DEFAULTS = {
     "fonts": {"body": "Nanum Myeongjo", "caption": "Nanum Gothic", "title": "Nanum Myeongjo"},
     "type": {"body_pt": 10, "caption_pt": 7.5, "title_pt": 24},
     "page_numbers": False,
+    "marks": True,
     "output": {"standard": "pdf/x-1a", "intent": "perceptual", "icc": None, "jpeg_quality": 95},
     "source": {"size": "fullsize"},
 }
+
+
+class SpecError(ValueError):
+    pass
 
 
 @dataclass
@@ -39,6 +55,7 @@ class Page:
     template: str
     data: dict
     span: int = 1
+    source: int | None = None  # index into book.yaml `pages` (None for auto-inserted blanks)
 
     @property
     def recto(self) -> bool:
@@ -58,8 +75,10 @@ class Book:
     type: dict
     output: dict
     source: dict
+    marks: bool = True
+    page_numbers: bool = False
     pages: list[Page] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
+    issues: list[Issue] = field(default_factory=list)
 
     @property
     def title(self):
@@ -88,13 +107,11 @@ class Book:
     def photo_ids(self) -> list[str]:
         ids = []
         for p in self.pages:
-            for k in ("photo", "photos"):
-                v = p.data.get(k)
-                if isinstance(v, str):
-                    ids.append(v)
-                elif isinstance(v, list):
-                    ids += [x for x in v if isinstance(x, str)]
-        return ids
+            v = p.data.get("photo")
+            if isinstance(v, str):
+                ids.append(v)
+            ids += list(p.data.get("photos") or [])
+        return list(dict.fromkeys(ids))
 
 
 def _merge(base: dict, over: dict | None) -> dict:
@@ -107,44 +124,65 @@ def _merge(base: dict, over: dict | None) -> dict:
     return out
 
 
+def _path(err: jsonschema.ValidationError) -> str:
+    parts = []
+    for p in err.absolute_path:
+        parts.append(f"[{p}]" if isinstance(p, int) else ("." if parts else "") + str(p))
+    return "".join(parts) or "<root>"
+
+
+def validate(raw: dict) -> list[str]:
+    """Schema errors as human/agent readable strings. Empty list means valid."""
+    if raw.get("version") != SPEC_VERSION:
+        return [f"version: must be {SPEC_VERSION} (add `version: {SPEC_VERSION}` at the top of book.yaml)"]
+    v = jsonschema.Draft202012Validator(SCHEMA)
+    errors = []
+    for err in sorted(v.iter_errors(raw), key=lambda e: [str(x) for x in e.absolute_path]):
+        if err.validator == "oneOf" and list(err.absolute_path) == ["trim"]:
+            errors.append("trim: use a preset name, {preset: NAME} or {width_mm, height_mm}")
+        else:
+            errors.append(f"{_path(err)}: {err.message}")
+    if errors:
+        return errors
+    # per-template validation with the matching sub-schema (precise messages, no oneOf noise)
+    for i, item in enumerate(raw.get("pages") or []):
+        tpl = item["template"]
+        sub = {"$defs": SCHEMA["$defs"], **SCHEMA["$defs"]["templates"][tpl]}
+        for err in jsonschema.Draft202012Validator(sub).iter_errors(item):
+            where = _path(err)
+            errors.append(f"pages[{i}] ({tpl}){'' if where == '<root>' else ' ' + where}: {err.message}")
+    return errors
+
+
 def load(path: str | Path) -> Book:
     path = Path(path).resolve()
     raw = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(raw, dict):
+        raise SpecError(f"{path.name}: top level must be a mapping")
+    errors = validate(raw)
+    if errors:
+        raise SpecError(f"{path.name} is not a valid book spec:\n  " + "\n  ".join(errors))
     cfg = _merge(DEFAULTS, raw)
     w, h = resolve_trim(cfg.get("trim") or {"preset": "A5"})
     binding = cfg["binding"]
-    if binding not in BINDINGS:
-        raise ValueError(f"unknown binding {binding!r}; known: {', '.join(BINDINGS)}")
     book = Book(path=path, raw=raw, trim_w=w, trim_h=h, bleed=float(cfg["bleed_mm"]), binding=binding,
                 margins=cfg["margins_mm"], fonts=cfg["fonts"], type=cfg["type"], output=cfg["output"],
-                source=cfg.get("source") or {})
-    # layout pages: spreads must start on a verso (even) page; insert blanks when needed
+                source=cfg.get("source") or {}, marks=bool(cfg["marks"]), page_numbers=bool(cfg["page_numbers"]))
     index = 1
     for i, item in enumerate(raw.get("pages") or []):
-        if isinstance(item, str):
-            item = {"template": item}
-        tpl = item.get("template", "margin")
-        if tpl not in TEMPLATES:
-            raise ValueError(f"pages[{i}]: unknown template {tpl!r}; known: {', '.join(TEMPLATES)}")
-        span, nphotos, _ = TEMPLATES[tpl]
-        have = item.get("photos") if nphotos == 2 else item.get("photo")
-        if nphotos == 1 and not isinstance(have, str):
-            raise ValueError(f"pages[{i}] ({tpl}): needs `photo: <asset id>`")
-        if nphotos == 2 and not (isinstance(have, list) and len(have) == 2):
-            raise ValueError(f"pages[{i}] ({tpl}): needs `photos: [<asset id>, <asset id>]`")
+        tpl = item["template"]
+        span, _ = TEMPLATES[tpl]
         if span == 2 and index % 2 == 1:
-            book.pages.append(Page(index=index, template="blank", data={"auto": True}))
-            book.warnings.append(f"pages[{i}] ({tpl}) moved to page {index + 1}: a blank page was inserted so the spread starts on a left page")
+            book.pages.append(Page(index=index, template="blank", data={}, source=None))
+            book.issues.append(Issue("SPREAD_MOVED", f"pages[{i}] ({tpl}) starts on page {index + 1}; a blank page was inserted so the spread begins on a left page", page=index))
             index += 1
-        book.pages.append(Page(index=index, template=tpl, data=item, span=span))
+        book.pages.append(Page(index=index, template=tpl, data=item, span=span, source=i))
         index += span
-    # pad to the binding's page multiple with trailing blanks
-    from .presets import round_up_pages
     target = round_up_pages(book.page_count, binding)
     if target != book.page_count:
-        book.warnings.append(f"{book.page_count} pages padded to {target} with blank pages ({binding} binding needs a multiple of {BINDINGS[binding]['page_multiple']})")
+        book.issues.append(Issue("PAGES_PADDED", f"{book.page_count} pages padded to {target} with blank pages ({binding} binding needs a multiple of {BINDINGS[binding]['page_multiple']})"))
         while book.page_count < target:
-            book.pages.append(Page(index=index, template="blank", data={"auto": True}))
+            book.pages.append(Page(index=index, template="blank", data={}, source=None))
             index += 1
     return book
 
@@ -156,19 +194,20 @@ def skeleton(album: dict, photos: list, out_standard: str = "pdf/x-1a", icc: str
     for i, p in enumerate(photos):
         w, h = (p.cropped or p.original or (3, 2))
         landscape = w >= h
+        note = p.file or ""
         if i % 5 == 4 and landscape:
-            pages.append({"template": "spread-full", "photo": p.id, "focal": [0.5, 0.5], "_file": p.file})
+            pages.append({"template": "spread-full", "photo": p.id, "focal": [0.5, 0.5], "note": note})
         elif landscape and i % 3 == 0:
-            pages.append({"template": "full-bleed", "photo": p.id, "focal": [0.5, 0.5], "_file": p.file})
+            pages.append({"template": "full-bleed", "photo": p.id, "focal": [0.5, 0.5], "note": note})
         else:
-            pages.append({"template": "margin", "photo": p.id, "caption": p.caption or "", "_file": p.file})
-    pages.append({"template": "colophon", "text": f"{album.get('name', '')}\n\n© {album.get('owner', '')}"})
+            pages.append({"template": "margin", "photo": p.id, "caption": p.caption or "", "note": note})
+    pages.append({"template": "colophon", "text": f"{album.get('name', '')}\n"})
     return {
+        "version": SPEC_VERSION,
         "title": album.get("name") or "Untitled",
         "trim": {"preset": "A5"},
         "bleed_mm": 3,
         "binding": "perfect",
-        "paper": {"caliper_um": 110},
         "margins_mm": dict(DEFAULTS["margins_mm"]),
         "fonts": dict(DEFAULTS["fonts"]),
         "output": {"standard": out_standard, "icc": icc, "intent": "perceptual"},

@@ -89,7 +89,7 @@ def cmd_init(a):
     icc = a.icc or next((p for p in ("JapanColor2001Coated", "CoatedFOGRA39") if color.find_profile(p)), None)
     s = spec.skeleton(info, photos, a.standard, icc)
     spec.dump(s, out)
-    (root / "photos.json").write_text(json.dumps([p.to_dict() for p in photos], indent=1, ensure_ascii=False))
+    (root / "photos.json").write_text(json.dumps(compat.photos_document(info, photos), indent=1, ensure_ascii=False))
     log(f"wrote {out} with {len(photos)} photos (album order: {info['sort']}); photo metadata in {root / 'photos.json'}")
     print(out)
     return 0
@@ -118,8 +118,8 @@ def cmd_render(a):
     from . import render
     book = _book(a.book)
     rep = render.render(book, log=log)
-    for w in rep["warnings"]:
-        log("warning: " + w)
+    for it in rep["issues"]:
+        log(f"{it['level']}: {it['code']}: " + (f"page {it['page']}: " if it.get("page") else "") + it["message"])
     print(rep["pdf"])
     return 0
 
@@ -176,7 +176,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     try:
         return a.f(a) or 0
-    except (ValueError, FileNotFoundError) as e:
+    except (ValueError, FileNotFoundError, spec.SpecError) as e:
         log(f"error: {e}")
         return 2
 

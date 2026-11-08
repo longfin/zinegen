@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .issues import Issue
 from .presets import BINDINGS
 from .spec import Book, Page
 
@@ -139,7 +140,7 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
                 caption = str(d.get("caption") or "").strip()
                 if caption:
                     pl.texts.append(TextEl("caption", caption, l, H - float(book.margins["bottom"]) + 3, bw, cap_h))
-            if book.raw.get("page_numbers") and p.template not in ("title", "blank", "full-bleed"):
+            if book.page_numbers and p.template not in ("title", "blank", "full-bleed"):
                 pl.texts.append(TextEl("folio", str(p.index), l, H - float(book.margins["bottom"]) + 6, bw, 6,
                                        "right" if pl.recto else "left"))
             out.append(pl)
@@ -165,9 +166,12 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
     return out
 
 
+REPORT_VERSION = 1
+
+
 def report(book: Book, pages: list[PageLayout]) -> dict:
-    """Resolution and gutter warnings per placed image."""
-    items, warnings = [], list(book.warnings)
+    """report.json (version 1): placed images with effective resolution, plus structured issues."""
+    items, issues = [], list(book.issues)
     seen = set()
     for pl in pages:
         for im in pl.images:
@@ -180,7 +184,11 @@ def report(book: Book, pages: list[PageLayout]) -> dict:
             items.append({"page": pl.index, "photo": im.photo, "template": pl.template, "placed_mm": [round(im.w, 1), round(im.h, 1)],
                           "px": list(im.px), "dpi": dpi, "level": level, "crossing_gutter": im.crossing_gutter})
             if level != "ok":
-                warnings.append(f"page {pl.index}: {im.photo} is {dpi} dpi at {im.w:.0f}×{im.h:.0f} mm ({level})")
+                issues.append(Issue("BAD_DPI" if level == "bad" else "LOW_DPI",
+                                    f"{dpi} dpi at {im.w:.0f}×{im.h:.0f} mm", page=pl.index, photo=im.photo))
             if im.crossing_gutter and not BINDINGS[book.binding]["crossing_ok"]:
-                warnings.append(f"page {pl.index}: spread image crosses the gutter; {book.binding} binding hides ~6-8 mm at the spine")
-    return {"images": items, "warnings": warnings, "pages": book.page_count}
+                issues.append(Issue("GUTTER_CROSSING", f"spread image crosses the gutter; {book.binding} binding hides ~6-8 mm at the spine",
+                                    page=pl.index, photo=im.photo))
+    return {"version": REPORT_VERSION, "title": book.title, "pages": book.page_count,
+            "trim_mm": [book.trim_w, book.trim_h], "bleed_mm": book.bleed, "binding": book.binding,
+            "images": items, "issues": [i.to_dict() for i in issues]}

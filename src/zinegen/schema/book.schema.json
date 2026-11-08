@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/longfin/zinegen/schema/book.schema.json",
+  "title": "zinegen book spec (book.yaml), version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "pages"],
+  "properties": {
+    "version": {"const": 1, "description": "Spec format version. Bump only on breaking changes."},
+    "title": {"type": "string"},
+    "trim": {
+      "description": "Trim size: a preset name or explicit millimetres.",
+      "oneOf": [
+        {"type": "string", "minLength": 1},
+        {"type": "object", "additionalProperties": false, "required": ["preset"],
+         "properties": {"preset": {"type": "string", "minLength": 1}}},
+        {"type": "object", "additionalProperties": false, "required": ["width_mm", "height_mm"],
+         "properties": {"width_mm": {"type": "number", "exclusiveMinimum": 0},
+                        "height_mm": {"type": "number", "exclusiveMinimum": 0}}}
+      ]
+    },
+    "bleed_mm": {"type": "number", "minimum": 0, "maximum": 10},
+    "binding": {"enum": ["saddle", "perfect", "hardcover", "layflat"]},
+    "paper": {
+      "type": "object", "additionalProperties": false,
+      "description": "Paper data used for the spine/cover (not by the interior renderer).",
+      "properties": {"caliper_um": {"type": "number", "exclusiveMinimum": 0},
+                     "name": {"type": "string"}}
+    },
+    "margins_mm": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"top": {"$ref": "#/$defs/mm"}, "bottom": {"$ref": "#/$defs/mm"},
+                     "inside": {"$ref": "#/$defs/mm"}, "outside": {"$ref": "#/$defs/mm"}}
+    },
+    "fonts": {
+      "type": "object", "additionalProperties": false,
+      "description": "Font family names resolved through fontconfig.",
+      "properties": {"body": {"type": "string"}, "caption": {"type": "string"}, "title": {"type": "string"}}
+    },
+    "type": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"body_pt": {"$ref": "#/$defs/pt"}, "caption_pt": {"$ref": "#/$defs/pt"}, "title_pt": {"$ref": "#/$defs/pt"}}
+    },
+    "page_numbers": {"type": "boolean"},
+    "marks": {"type": "boolean", "description": "Crop and registration marks outside the bleed."},
+    "output": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "standard": {"enum": ["pdf/x-1a", "pdf/x-4"]},
+        "icc": {"type": ["string", "null"], "description": "CMYK press profile: a file path, or a file name searched in the usual profile directories (e.g. JapanColor2001Coated)."},
+        "intent": {"enum": ["perceptual", "relative-colorimetric", "saturation", "absolute-colorimetric"]},
+        "jpeg_quality": {"type": "integer", "minimum": 50, "maximum": 100}
+      }
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"album_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+                     "size": {"enum": ["640", "1280", "2048", "2560", "fullsize"]}}
+    },
+    "pages": {
+      "type": "array",
+      "items": {"type": "object", "required": ["template"],
+                "properties": {"template": {"enum": ["title", "blank", "text", "colophon", "full-bleed", "margin", "pair", "spread-full", "spread-margin"]}}}
+    }
+  },
+  "$defs": {
+    "mm": {"type": "number", "minimum": 0},
+    "pt": {"type": "number", "exclusiveMinimum": 0},
+    "photo": {"type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Lightroom asset id"},
+    "focal": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number", "minimum": 0, "maximum": 1},
+              "description": "[x, y] in 0..1: the point of the photo kept visible when it is cropped by a cover placement."},
+    "note": {"type": "string", "description": "Free text for humans and agents; ignored by the renderer."},
+    "templates": {
+      "title": {"type": "object", "additionalProperties": false, "required": ["template", "title"],
+                "properties": {"template": true, "title": {"type": "string"}, "subtitle": {"type": "string"}, "note": {"$ref": "#/$defs/note"}}},
+      "blank": {"type": "object", "additionalProperties": false, "required": ["template"],
+                "properties": {"template": true, "note": {"$ref": "#/$defs/note"}}},
+      "text": {"type": "object", "additionalProperties": false, "required": ["template", "text"],
+               "properties": {"template": true, "heading": {"type": "string"}, "text": {"type": "string"}, "note": {"$ref": "#/$defs/note"}}},
+      "colophon": {"type": "object", "additionalProperties": false, "required": ["template", "text"],
+                   "properties": {"template": true, "text": {"type": "string"}, "note": {"$ref": "#/$defs/note"}}},
+      "full-bleed": {"type": "object", "additionalProperties": false, "required": ["template", "photo"],
+                     "properties": {"template": true, "photo": {"$ref": "#/$defs/photo"}, "focal": {"$ref": "#/$defs/focal"}, "note": {"$ref": "#/$defs/note"}}},
+      "margin": {"type": "object", "additionalProperties": false, "required": ["template", "photo"],
+                 "properties": {"template": true, "photo": {"$ref": "#/$defs/photo"}, "caption": {"type": "string"},
+                                "valign": {"enum": ["top", "center", "bottom"]}, "caption_align": {"enum": ["left", "center", "right"]},
+                                "note": {"$ref": "#/$defs/note"}}},
+      "pair": {"type": "object", "additionalProperties": false, "required": ["template", "photos"],
+               "properties": {"template": true, "photos": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/photo"}},
+                              "direction": {"enum": ["auto", "row", "column"]}, "gap_mm": {"$ref": "#/$defs/mm"},
+                              "caption": {"type": "string"}, "note": {"$ref": "#/$defs/note"}}},
+      "spread-full": {"type": "object", "additionalProperties": false, "required": ["template", "photo"],
+                      "properties": {"template": true, "photo": {"$ref": "#/$defs/photo"}, "focal": {"$ref": "#/$defs/focal"}, "note": {"$ref": "#/$defs/note"}}},
+      "spread-margin": {"type": "object", "additionalProperties": false, "required": ["template", "photo"],
+                        "properties": {"template": true, "photo": {"$ref": "#/$defs/photo"}, "caption": {"type": "string"}, "note": {"$ref": "#/$defs/note"}}}
+    }
+  }
+}

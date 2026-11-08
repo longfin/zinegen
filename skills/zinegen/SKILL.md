@@ -24,11 +24,14 @@ Lightroom browsing (ratings, filters, viewing candidates) comes from the `lightr
 3. `zg_init_book` drafts `books/<name>/book.yaml` (sequence = album order, templates auto-assigned) and
    `photos.json` (metadata). Read both.
 4. Edit `book.yaml`: sequence, template per page, `focal` for cropped placements, captions, title/colophon text.
+   The file starts with `version: 1` and is schema-checked: unknown keys and wrong types are rejected with the
+   path of the mistake. Use `note` on a page for remarks; the renderer ignores it.
    Write caption/essay drafts yourself; keep them short and mark them clearly so the user can edit the YAML.
 5. `zg_fetch` → `zg_render` → `zg_proof`. Look at every spread. Critique like an editor: pacing (rhythm of
    full-bleed vs margin pages), facing-page relationships, horizon alignment, repeated motifs, dead white space,
    subjects cut by the gutter, captions competing with images. Fix in `book.yaml`, re-render. Two or three passes.
-6. `zg_check` must return `ok: true`. Report warnings (low dpi, gutter crossing, padded pages) to the user.
+6. `zg_check` must return `ok: true`. `zg_render` and `zg_check` return `issues` with a `code` (LOW_DPI,
+   BAD_DPI, GUTTER_CROSSING, SPREAD_MOVED, PAGES_PADDED, ...), `level` and `page`; report warnings to the user.
 7. Deliver `out/interior.pdf` and tell the user what to confirm with the printer: paper caliper for the spine
    (`zg_spine`), whether they accept PDF/X-1a or X-4, and the ICC profile used.
 

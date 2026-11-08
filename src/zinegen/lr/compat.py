@@ -14,7 +14,9 @@ from pathlib import Path
 from lr_mcp import client as lr
 from lr_mcp.client import LrError
 
-__all__ = ["LrError", "Photo", "album_info", "album_assets", "fetch_renditions"]
+__all__ = ["LrError", "Photo", "album_info", "album_assets", "fetch_renditions", "photos_document"]
+
+PHOTOS_VERSION = 1
 
 
 @dataclass
@@ -37,7 +39,9 @@ class Photo:
     extra: dict = field(default_factory=dict)
 
     def to_dict(self):
-        return asdict(self)
+        d = asdict(self)
+        d.pop("extra", None)
+        return d
 
 
 def _latest(d, key):
@@ -76,6 +80,12 @@ def _photo(album_asset: dict) -> Photo:
         changed_at=p.get("changedAtTime") or p.get("userUpdated"),
         extra={"subtype": a.get("subtype")},
     )
+
+
+def photos_document(album: dict, photos: list[Photo]) -> dict:
+    """photos.json (version 1): album info and the photos in album order."""
+    return {"version": PHOTOS_VERSION, "album": {"id": album["id"], "name": album.get("name"), "sort": album.get("sort")},
+            "photos": [p.to_dict() for p in photos]}
 
 
 def album_info(album_id: str) -> dict:

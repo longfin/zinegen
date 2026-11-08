@@ -15,7 +15,9 @@ typesetting workflow and taste rules.
 src/zinegen/
   lr/compat.py   Lightroom helpers missing from lr-mcp (album order, captions, cached renditions)
   presets.py     trim presets, binding rules, spine width
-  spec.py        book.yaml loading/validation, templates, skeleton drafting
+  spec.py        book.yaml loading, JSON Schema validation, skeleton drafting
+  schema/        book.schema.json (book.yaml format, version 1)
+  issues.py      issue codes shared by report.json and check.json
   layout.py      page geometry in mm, dpi/gutter report
   render.py      HTML -> WeasyPrint PDF/X, pikepdf post-processing
   color.py       ICC conversion (Pillow + LittleCMS), gamut check
@@ -44,6 +46,10 @@ macOS: WeasyPrint needs `brew install pango`; `render.py` sets `DYLD_FALLBACK_LI
 lib dir automatically. Ghostscript (`gs`) is required for proofs.
 
 ## Rules
+
+- **Frozen formats** (see `docs/03-schemas.md`): `book.yaml` (`version: 1`, `schema/book.schema.json`),
+  `photos.json`, `out/report.json`, `out/check.json`. Add fields freely; renaming or removing one, or changing
+  a meaning, bumps that format's version and needs a migration note in the doc. New issue codes go in `issues.py`.
 
 - **`book.yaml` is the only editable artefact of a book.** Never patch `out/interior.pdf` or `interior.html`.
   If the renderer cannot express something, extend `layout.py`/`spec.py` and add a template.
