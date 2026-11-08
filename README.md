@@ -41,7 +41,7 @@ subscriber from zero to a first PDF, and the agent can run it for you.
 ```bash
 brew install pango ghostscript            # WeasyPrint runtime, proof rendering (macOS; apt equivalents on Linux)
 uv tool install lr-mcp && lr-mcp doctor   # Lightroom credentials and sign-in: follow the lr-mcp README
-uv tool install .                         # or for development: uv venv && uv pip install -e ".[dev]"
+uv tool install zinegen                   # from PyPI; for development: git clone, uv venv && uv pip install -e ".[dev]"
 zinegen doctor
 ```
 
@@ -62,7 +62,7 @@ npx skills add longfin/zinegen
 codex mcp add zinegen -- "$(which zinegen)" mcp          # Codex still needs the MCP server registered
 ```
 
-Without either tool, copy `skills/zinegen` into `~/.claude/skills/` or `~/.codex/skills/` and register the server
+Without either tool, clone the repo and copy `skills/zinegen` into `~/.claude/skills/` or `~/.codex/skills/` and register the server
 with `claude mcp add zinegen -s user -- "$(which zinegen)" mcp`.
 
 Both agents also need the `lightroom` MCP server from lr-mcp for browsing and rating photos.

@@ -73,8 +73,7 @@ lr-mcp doctor
 ## 3. Install zinegen
 
 ```bash
-git clone https://github.com/longfin/zinegen && cd zinegen
-uv tool install .
+uv tool install zinegen
 zinegen doctor
 ```
 
@@ -106,7 +105,7 @@ npx skills add longfin/zinegen -a codex
 ```
 
 `npx skills add longfin/zinegen` without `-a` offers every agent it knows (Claude Code, Codex, Cursor, ...).
-If you would rather not run either installer, copy the folder by hand:
+If you would rather not run either installer, clone https://github.com/longfin/zinegen and copy the folder by hand:
 
 ```bash
 mkdir -p ~/.claude/skills && cp -r skills/zinegen ~/.claude/skills/zinegen   # Claude Code
