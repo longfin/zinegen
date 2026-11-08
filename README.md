@@ -31,6 +31,9 @@ book.yaml (edited by the agent / you) ─────────┴──render
 - A structural self-check (output intent, trim/bleed boxes, colour spaces, transparency, font embedding,
   resolution) runs with pikepdf. It is not a replacement for Acrobat/callas preflight.
 
+**New here?** Follow [docs/getting-started.md](docs/getting-started.md): it takes a Claude Code or Codex
+subscriber from zero to a first PDF, and the agent can run it for you.
+
 ## Install
 
 ```bash
@@ -84,6 +87,7 @@ books/<name>/
 
 ## Docs
 
+- `docs/getting-started.md` — zero-to-first-book guide for Claude Code / Codex users
 - `AGENTS.md` — how an agent should work in this repo and with the tool
 - `docs/00-research.md` — initial research (Korean)
 - `docs/01-probe-results.md` — measured rendition quality and WeasyPrint PDF/X results (Korean)
