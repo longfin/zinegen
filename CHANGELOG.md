@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0 — 2026-11-08
 
 First public version.
 
@@ -9,3 +9,5 @@ First public version.
 - PDF/X-1a (CMYK via LittleCMS) and PDF/X-4 (ICC-tagged RGB passthrough) output with WeasyPrint.
 - Spread proofs (Ghostscript) and a structural PDF/X self-check (pikepdf) with coded issues.
 - CLI, MCP server (`zg_*` tools) and an agent skill for Claude Code / Codex.
+- Installable as a Claude Code plugin (`/plugin install zinegen --marketplace longfin/zinegen`) and through
+  `npx skills add longfin/zinegen`.

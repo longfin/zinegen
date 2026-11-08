@@ -1,6 +1,11 @@
 ---
 name: zinegen
 description: Typeset a photobook/zine from a Lightroom (cloud) album into a print-ready PDF/X with the zinegen CLI or MCP server. Use when asked to make a photobook, zine, 사진집, 포토북, 조판, or a print PDF from Lightroom photos.
+license: MIT
+compatibility: Requires the zinegen CLI (uv tool install zinegen) with pango and Ghostscript, and a Lightroom sign-in through lr-mcp
+metadata:
+  author: longfin
+  version: "0.1.0"
 ---
 
 # zinegen — agent-driven photobook typesetting

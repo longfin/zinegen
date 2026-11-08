@@ -1,0 +1,11 @@
+{
+  "name": "zinegen",
+  "displayName": "zinegen",
+  "version": "0.1.0",
+  "description": "Typeset a photobook or zine from a Lightroom album into a print-ready PDF/X (skill + MCP server)",
+  "author": { "name": "Swen Mun", "url": "https://github.com/longfin" },
+  "homepage": "https://github.com/longfin/zinegen#readme",
+  "repository": "https://github.com/longfin/zinegen",
+  "license": "MIT",
+  "keywords": ["lightroom", "photobook", "zine", "pdf/x", "prepress", "typesetting", "mcp"]
+}

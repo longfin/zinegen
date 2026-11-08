@@ -1,0 +1,13 @@
+{
+  "name": "longfin",
+  "description": "Plugins by longfin",
+  "owner": { "name": "Swen Mun", "url": "https://github.com/longfin" },
+  "plugins": [
+    {
+      "name": "zinegen",
+      "source": "./",
+      "description": "Typeset a photobook or zine from a Lightroom album into a print-ready PDF/X (skill + MCP server)",
+      "category": "productivity"
+    }
+  ]
+}

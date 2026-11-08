@@ -85,12 +85,16 @@ automatically.
 
 ## 4. Register the MCP servers and the skill
 
-Claude Code:
+Claude Code. The plugin brings the skill and the `zinegen` MCP server together; only `lightroom` is added by hand:
 
 ```bash
 claude mcp add lightroom -s user -- "$(which lr-mcp)"
-claude mcp add zinegen   -s user -- "$(which zinegen)" mcp
-mkdir -p ~/.claude/skills && cp -r skills/zinegen ~/.claude/skills/zinegen
+```
+
+then inside Claude Code:
+
+```
+/plugin install zinegen --marketplace longfin/zinegen
 ```
 
 Codex:
@@ -98,7 +102,15 @@ Codex:
 ```bash
 codex mcp add lightroom -- "$(which lr-mcp)"
 codex mcp add zinegen   -- "$(which zinegen)" mcp
-mkdir -p ~/.codex/skills && cp -r skills/zinegen ~/.codex/skills/zinegen
+npx skills add longfin/zinegen -a codex
+```
+
+`npx skills add longfin/zinegen` without `-a` offers every agent it knows (Claude Code, Codex, Cursor, ...).
+If you would rather not run either installer, copy the folder by hand:
+
+```bash
+mkdir -p ~/.claude/skills && cp -r skills/zinegen ~/.claude/skills/zinegen   # Claude Code
+mkdir -p ~/.codex/skills  && cp -r skills/zinegen ~/.codex/skills/zinegen    # Codex
 ```
 
 Start a new agent session afterwards. `lr_*` and `zg_*` tools should appear in the tool list.

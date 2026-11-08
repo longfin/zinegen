@@ -51,14 +51,19 @@ can be downloaded free from [ECI](https://www.eci.org/).
 
 ## Register with an agent
 
+`zinegen` must be on `PATH` first (`uv tool install`, above). Then pick one:
+
 ```bash
-# Claude Code
-claude mcp add zinegen -s user -- "$(which zinegen)" mcp
-cp -r skills/zinegen ~/.claude/skills/zinegen
-# Codex
-codex mcp add zinegen -- "$(which zinegen)" mcp
-cp -r skills/zinegen ~/.codex/skills/zinegen
+# Claude Code: plugin install adds the skill and registers the `zinegen` MCP server in one step
+/plugin install zinegen --marketplace longfin/zinegen
+
+# Any agent that reads SKILL.md folders (Claude Code, Codex, Cursor, ...): skill only
+npx skills add longfin/zinegen
+codex mcp add zinegen -- "$(which zinegen)" mcp          # Codex still needs the MCP server registered
 ```
+
+Without either tool, copy `skills/zinegen` into `~/.claude/skills/` or `~/.codex/skills/` and register the server
+with `claude mcp add zinegen -s user -- "$(which zinegen)" mcp`.
 
 Both agents also need the `lightroom` MCP server from lr-mcp for browsing and rating photos.
 

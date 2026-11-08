@@ -69,6 +69,11 @@ lib dir automatically. Ghostscript (`gs`) is required for proofs.
   as a dependency, so they can be upstreamed unchanged (lr-mcp issues #9, #10, #11).
 - Tests must not touch the network. `tests/test_render.py` renders synthetic JPEGs through the real pipeline
   (PDF/X-4 with an RGB output intent); anything that needs Lightroom or a CMYK profile is a manual `build` run.
+- **One version, three places.** `pyproject.toml`, `.claude-plugin/plugin.json` and `metadata.version` in
+  `skills/zinegen/SKILL.md` must agree (`tests/test_release.py` checks). To release: bump all three, date the
+  CHANGELOG entry, commit, `git tag vX.Y.Z && git push --tags`, then `uv build` and `gh release create vX.Y.Z dist/*`.
+  The repo root is both the plugin and a one-entry marketplace (`.claude-plugin/marketplace.json`, `.mcp.json`);
+  `claude plugin validate .` must pass.
 - Lint with `ruff check .` (config in pyproject); CI runs ruff, pytest and a wheel build on Ubuntu.
 - Commit messages: short imperative subject, body explaining why. Do not commit `books/*/cache`, `out`, `proof`,
   PDFs or PNGs (see `.gitignore`).

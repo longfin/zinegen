@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "zinegen": {
+      "command": "zinegen",
+      "args": ["mcp"]
+    }
+  }
+}
