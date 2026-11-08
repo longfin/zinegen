@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>{{ book.title }}</title>
+<style>
+{% for ff in font_faces %}@font-face { font-family: "{{ ff.family }}"; font-weight: {{ ff.weight }}; src: url("{{ ff.file }}"); }
+{% endfor %}
+{% if icc %}@color-profile --press { src: url("{{ icc }}"); components: c, m, y, k; }{% endif %}
+@page { size: {{ W }}mm {{ H }}mm; margin: 0; bleed: {{ B }}mm; {% if marks %}marks: crop cross;{% endif %} }
+html, body { margin: 0; padding: 0; }
+.page { position: relative; width: {{ W }}mm; height: {{ H }}mm; page-break-after: always; overflow: visible; }
+.page:last-child { page-break-after: auto; }
+.clip { position: absolute; overflow: hidden; }
+.clip img { position: absolute; display: block; }
+.t { position: absolute; color: device-cmyk(0 0 0 1); white-space: pre-wrap; overflow: hidden; }
+.title { font-family: "{{ fonts.title }}", "Apple SD Gothic Neo", sans-serif; font-size: {{ type.title_pt }}pt; line-height: 1.3; letter-spacing: 0.02em; }
+.subtitle { font-family: "{{ fonts.body }}", "Apple SD Gothic Neo", sans-serif; font-size: {{ type.body_pt + 1 }}pt; line-height: 1.5; }
+.heading { font-family: "{{ fonts.title }}", "Apple SD Gothic Neo", sans-serif; font-size: {{ type.body_pt + 4 }}pt; line-height: 1.4; }
+.body { font-family: "{{ fonts.body }}", "Apple SD Gothic Neo", serif; font-size: {{ type.body_pt }}pt; line-height: 1.75; text-align: justify; word-break: keep-all; }
+.caption { font-family: "{{ fonts.caption }}", "Apple SD Gothic Neo", sans-serif; font-size: {{ type.caption_pt }}pt; line-height: 1.5; color: device-cmyk(0 0 0 0.85); }
+.colophon { font-family: "{{ fonts.caption }}", "Apple SD Gothic Neo", sans-serif; font-size: {{ type.caption_pt }}pt; line-height: 1.6; color: device-cmyk(0 0 0 0.85); }
+.folio { font-family: "{{ fonts.caption }}", "Apple SD Gothic Neo", sans-serif; font-size: {{ type.caption_pt }}pt; color: device-cmyk(0 0 0 0.7); }
+.center { text-align: center; } .right { text-align: right; } .left { text-align: left; }
+</style>
+</head>
+<body>
+{% for pl in pages %}
+<div class="page" data-page="{{ pl.index }}" data-template="{{ pl.template }}">
+{% for im in pl.images %}
+  <div class="clip" style="left:{{ im.clip[0] }}mm;top:{{ im.clip[1] }}mm;width:{{ im.clip[2] }}mm;height:{{ im.clip[3] }}mm">
+    <img src="{{ files[im.photo] }}" style="left:{{ '%.3f' % (im.x - im.clip[0]) }}mm;top:{{ '%.3f' % (im.y - im.clip[1]) }}mm;width:{{ '%.3f' % im.w }}mm;height:{{ '%.3f' % im.h }}mm">
+  </div>
+{% endfor %}
+{% for t in pl.texts %}
+  <div class="t {{ t.kind }} {{ t.align }}" style="left:{{ t.x }}mm;top:{{ t.y }}mm;width:{{ t.w }}mm;height:{{ t.h }}mm">{{ t.text }}</div>
+{% endfor %}
+</div>
+{% endfor %}
+</body>
+</html>

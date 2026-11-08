@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.egg-info/
+dist/
+build/
+.zinegen-cache/
+books/*/cache/
+books/*/out/
+books/*/proof/
+*.pdf
+*.png
+!docs/**/*.png
+.DS_Store

@@ -1,0 +1,30 @@
+[project]
+name = "zinegen"
+version = "0.1.0"
+description = "Agent-driven photobook typesetting: Lightroom album -> print-ready PDF/X"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "Swen Mun" }]
+dependencies = [
+  "lr-mcp>=0.2",
+  "mcp>=2.3,<3",
+  "weasyprint>=66",
+  "pillow>=11",
+  "pikepdf>=9",
+  "pyyaml>=6",
+  "jinja2>=3.1",
+]
+
+[project.scripts]
+zinegen = "zinegen.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zinegen"]
