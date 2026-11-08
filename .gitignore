@@ -4,9 +4,7 @@ __pycache__/
 dist/
 build/
 .zinegen-cache/
-books/*/cache/
-books/*/out/
-books/*/proof/
+books/
 *.pdf
 *.png
 !docs/**/*.png

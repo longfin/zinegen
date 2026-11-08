@@ -6,7 +6,7 @@
 <style>
 {% for ff in font_faces %}@font-face { font-family: "{{ ff.family }}"; font-weight: {{ ff.weight }}; src: url("{{ ff.file }}"); }
 {% endfor %}
-{% if icc %}@color-profile --press { src: url("{{ icc }}"); components: c, m, y, k; }{% endif %}
+{% if icc %}@color-profile --press { src: url("{{ icc }}"); components: {{ icc_components }}; }{% endif %}
 @page { size: {{ W }}mm {{ H }}mm; margin: 0; bleed: {{ B }}mm; {% if marks %}marks: crop cross;{% endif %} }
 html, body { margin: 0; padding: 0; }
 .page { position: relative; width: {{ W }}mm; height: {{ H }}mm; page-break-after: always; overflow: visible; }

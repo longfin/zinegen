@@ -72,7 +72,7 @@ def check(book: Book) -> dict:
                 if float(g.get("/CA", 1)) < 1 or float(g.get("/ca", 1)) < 1 or str(g.get("/BM", "/Normal")) not in ("/Normal", "/Compatible"):
                     issues.append(Issue("TRANSPARENCY", f"transparency in ExtGState {k}", page=n,
                                         level="error" if std == "pdf/x-1a" else "warning"))
-            for fk, fo in (page.Resources.get("/Font") or {}).items():
+            for fo in (page.Resources.get("/Font") or {}).values():
                 fd = fo.get("/DescendantFonts")
                 d = (fd[0] if fd else fo).get("/FontDescriptor")
                 if not d or not any(k in d for k in ("/FontFile", "/FontFile2", "/FontFile3")):

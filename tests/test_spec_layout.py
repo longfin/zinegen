@@ -85,7 +85,9 @@ def test_validation_errors(tmp_path, pages, fragment):
 
 def test_top_level_validation(tmp_path):
     with pytest.raises(spec.SpecError, match="version"):
-        p = tmp_path / "book.yaml"; p.write_text(yaml.safe_dump({"pages": []})); spec.load(p)
+        p = tmp_path / "book.yaml"
+        p.write_text(yaml.safe_dump({"pages": []}))
+        spec.load(p)
     with pytest.raises(spec.SpecError, match="trim"):
         spec.load(write(tmp_path, [], trim={"width_mm": 100}))
     with pytest.raises(spec.SpecError, match="binding"):

@@ -1,5 +1,7 @@
 # zinegen
 
+[![ci](https://github.com/longfin/zinegen/actions/workflows/ci.yml/badge.svg)](https://github.com/longfin/zinegen/actions/workflows/ci.yml)
+
 Agent-driven photobook typesetting: a Lightroom (cloud) album goes in, a print-ready **PDF/X** comes out.
 One Python package provides a CLI, an MCP server and an agent skill, so Claude Code, Codex or any other
 MCP-capable agent can act as the typesetter while you curate in Lightroom and review proofs.
@@ -71,6 +73,8 @@ zinegen spine --pages 48 --caliper 110                   # spine width from page
 zinegen presets                                          # trim presets and binding rules
 ```
 
+A complete annotated spec is in [`examples/book.example.yaml`](examples/book.example.yaml).
+
 MCP tools: `zg_spec_help`, `zg_list_albums`, `zg_album_photos`, `zg_init_book`, `zg_fetch`, `zg_render`,
 `zg_proof`, `zg_check`, `zg_spine`.
 
@@ -96,8 +100,10 @@ books/<name>/
 
 ## Status
 
-v0: interior PDF for a single album, A5 perfect binding verified end to end. Not yet: cover PDF with spine,
-review GUI, upstreaming the Lightroom helpers to lr-mcp (issues #9–#11 there).
+Alpha (0.1.0). Interior PDF for a single album, A5 perfect binding verified end to end against a real album;
+the PDF/X output passes the built-in structural check but has not yet been through Acrobat/callas preflight.
+Not yet: cover PDF with spine, review GUI, upstreaming the Lightroom helpers to lr-mcp (issues #9–#11 there).
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

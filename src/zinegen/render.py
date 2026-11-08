@@ -9,7 +9,8 @@ from pathlib import Path
 
 import jinja2
 
-from . import color, layout as _layout
+from . import color
+from . import layout as _layout
 from .spec import Book
 
 STANDARDS = {"pdf/x-1a": "pdf/x-1a", "pdf/x-4": "pdf/x-4"}
@@ -58,6 +59,8 @@ def prepare_images(book: Book, log=None) -> tuple[dict[str, Path], dict[str, tup
     if std == "pdf/x-1a":
         if not icc:
             raise ValueError("pdf/x-1a needs `output.icc` (CMYK profile path or name, e.g. JapanColor2001Coated)")
+        if color.profile_components(icc) != ["c", "m", "y", "k"]:
+            raise ValueError(f"pdf/x-1a needs a CMYK output profile; {icc.name} is not CMYK")
         files = {pid: color.to_cmyk(f, icc, book.cache_dir.resolve() / "cmyk", book.output.get("intent", "perceptual"),
                                     int(book.output.get("jpeg_quality", 95)), log) for pid, f in srcs.items()}
     else:
@@ -68,6 +71,7 @@ def prepare_images(book: Book, log=None) -> tuple[dict[str, Path], dict[str, tup
         sizes[pid] = (i["width"], i["height"])
     info["icc"] = str(icc) if icc else None
     info["icc_description"] = color.profile_description(icc) if icc else None
+    info["icc_components"] = color.profile_components(icc) if icc else None
     return files, sizes, info
 
 
@@ -84,7 +88,8 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     icc_uri = Path(cinfo["icc"]).resolve().as_uri() if cinfo["icc"] else None
     html = tpl.render(book=book, pages=pages, files={k: Path(v).resolve().as_uri() for k, v in files.items()},
                       W=book.trim_w, H=book.trim_h, B=book.bleed, fonts=book.fonts, type=book.type,
-                      icc=icc_uri, marks=book.marks if marks is None else marks,
+                      icc=icc_uri, icc_components=", ".join(cinfo["icc_components"] or []),
+                      marks=book.marks if marks is None else marks,
                       font_faces=font_faces([book.fonts["body"], book.fonts["caption"], book.fonts["title"]]))
     book.out_dir.mkdir(parents=True, exist_ok=True)
     html_path = book.out_dir / "interior.html"

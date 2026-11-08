@@ -32,12 +32,12 @@ def spreads(pages: list[Path], dest: Path, gap: int = 0) -> list[Path]:
     rest = pages[1:]
     for i in range(0, len(rest), 2):
         groups.append((rest[i], rest[i + 1] if i + 1 < len(rest) else None))
-    for n, (l, r) in enumerate(groups, 1):
-        sample = Image.open(l or r)
+    for n, (left, right) in enumerate(groups, 1):
+        sample = Image.open(left or right)
         w, h = sample.size
         canvas = Image.new("RGB", (2 * w + gap + 40, h + 40), (90, 90, 90))
         draw = ImageDraw.Draw(canvas)
-        for img, x in ((l, 20), (r, 20 + w + gap)):
+        for img, x in ((left, 20), (right, 20 + w + gap)):
             if img is not None:
                 canvas.paste(Image.open(img), (x, 20))
             else:

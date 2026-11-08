@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries (pango for WeasyPrint, ghostscript for proofs, fonts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpango-1.0-0 libpangoft2-1.0-0 ghostscript fontconfig fonts-dejavu-core fonts-nanum
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv && uv pip install -e ".[dev]" ruff
+      - run: .venv/bin/ruff check .
+      - run: .venv/bin/python -m pytest -q
+      - name: Package builds and ships its data files
+        run: |
+          uv build
+          unzip -l dist/*.whl | grep -E "schema/book.schema.json|templates/book.html.j2|templates/sRGB2014.icc"

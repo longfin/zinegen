@@ -29,7 +29,8 @@ src/zinegen/
 skills/zinegen/  agent skill
 docs/            research, probe results, design (Korean)
 probe/           reproducible experiments (not part of the package)
-books/           sample book specs; cache/out/proof are git-ignored
+examples/        annotated book.example.yaml
+books/           your books (git-ignored: they reference a private catalog)
 tests/           pytest (no network)
 ```
 
@@ -39,7 +40,7 @@ tests/           pytest (no network)
 uv venv && . .venv/bin/activate && uv pip install -e ".[dev]"
 zinegen doctor                      # pango, ghostscript, ICC profiles, Lightroom sign-in
 python -m pytest -q                 # unit tests (spec, layout, presets)
-zinegen build books/danpung         # end-to-end on the sample album (needs Lightroom sign-in)
+zinegen build books/<name>          # end-to-end on a real album (needs Lightroom sign-in); books/ is git-ignored
 ```
 
 macOS: WeasyPrint needs `brew install pango`; `render.py` sets `DYLD_FALLBACK_LIBRARY_PATH` to the Homebrew
@@ -66,7 +67,9 @@ lib dir automatically. Ghostscript (`gs`) is required for proofs.
   Resolve press profiles at run time (`color.find_profile`) and prefer OFL fonts (Nanum, Noto, Pretendard) as defaults.
 - Functions that lr-mcp may adopt later live in `lr/compat.py` and must stay importable with only `lr_mcp.client`
   as a dependency, so they can be upstreamed unchanged (lr-mcp issues #9, #10, #11).
-- Tests must not touch the network. Anything that needs Lightroom belongs in a manual `build` run, not in pytest.
+- Tests must not touch the network. `tests/test_render.py` renders synthetic JPEGs through the real pipeline
+  (PDF/X-4 with an RGB output intent); anything that needs Lightroom or a CMYK profile is a manual `build` run.
+- Lint with `ruff check .` (config in pyproject); CI runs ruff, pytest and a wheel build on Ubuntu.
 - Commit messages: short imperative subject, body explaining why. Do not commit `books/*/cache`, `out`, `proof`,
   PDFs or PNGs (see `.gitignore`).
 

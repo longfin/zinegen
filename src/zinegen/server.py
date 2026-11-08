@@ -1,9 +1,7 @@
 """MCP server exposing the zinegen pipeline to any agent (Claude Code, Codex, ...)."""
 from __future__ import annotations
 
-import io
 import json
-import sys
 from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
@@ -91,12 +89,13 @@ def zg_album_photos(album_id: str) -> str:
 def zg_init_book(album_id: str, dir: str | None = None, standard: str = "pdf/x-1a", icc: str | None = None,
                  force: bool = False) -> str:
     """Draft a book.yaml for an album under `dir` (default books/<album name>). Returns the path."""
-    from .cli import cmd_init
     import argparse
+
+    from .cli import cmd_init
     rc = cmd_init(argparse.Namespace(album=album_id, dir=dir, standard=standard, icc=icc, force=force))
     if rc:
         return "book.yaml already exists; pass force=true to overwrite"
-    name = dir or f"books/<album>"
+    name = dir or "books/<album>"
     return f"drafted {name}/book.yaml; read it, then edit sequence/templates/captions and call zg_fetch + zg_render"
 
 

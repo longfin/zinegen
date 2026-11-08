@@ -44,6 +44,12 @@ def profile_description(path: Path) -> str:
     return ImageCms.getProfileDescription(ImageCms.ImageCmsProfile(str(path))).strip()
 
 
+def profile_components(path: Path) -> list[str]:
+    """CSS @color-profile component names for the profile's colour space (c,m,y,k or r,g,b or gray)."""
+    space = ImageCms.ImageCmsProfile(str(path)).profile.xcolor_space.strip()
+    return {"CMYK": ["c", "m", "y", "k"], "RGB": ["r", "g", "b"], "GRAY": ["gray"]}.get(space, ["c", "m", "y", "k"])
+
+
 def image_info(path: Path) -> dict:
     with Image.open(path) as im:
         icc = im.info.get("icc_profile")

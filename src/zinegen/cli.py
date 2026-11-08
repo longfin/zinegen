@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shutil
 import sys
@@ -162,16 +161,33 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("doctor").set_defaults(f=cmd_doctor)
     sub.add_parser("presets").set_defaults(f=cmd_presets)
-    p = sub.add_parser("albums"); p.add_argument("query", nargs="?"); p.set_defaults(f=cmd_albums)
+    p = sub.add_parser("albums", help="list Lightroom albums")
+    p.add_argument("query", nargs="?")
+    p.set_defaults(f=cmd_albums)
     p = sub.add_parser("init", help="draft book.yaml from a Lightroom album")
-    p.add_argument("--album", required=True); p.add_argument("--dir"); p.add_argument("--standard", default="pdf/x-1a", choices=["pdf/x-1a", "pdf/x-4"])
-    p.add_argument("--icc"); p.add_argument("--force", action="store_true"); p.set_defaults(f=cmd_init)
-    for name, f in (("fetch", cmd_fetch), ("render", cmd_render), ("check", cmd_check), ("build", cmd_build)):
-        p = sub.add_parser(name); p.add_argument("book", nargs="?", default="book.yaml"); p.add_argument("--force", action="store_true")
-        p.add_argument("--dpi", type=int, default=50); p.set_defaults(f=f)
-    p = sub.add_parser("proof"); p.add_argument("book", nargs="?", default="book.yaml"); p.add_argument("--dpi", type=int, default=50); p.set_defaults(f=cmd_proof)
-    p = sub.add_parser("spine"); p.add_argument("--pages", type=int, required=True); p.add_argument("--caliper", type=float, required=True, help="paper caliper in µm")
-    p.add_argument("--binding", default="perfect", choices=list(presets.BINDINGS)); p.add_argument("--board", type=float, default=2.0); p.set_defaults(f=cmd_spine)
+    p.add_argument("--album", required=True)
+    p.add_argument("--dir")
+    p.add_argument("--standard", default="pdf/x-1a", choices=["pdf/x-1a", "pdf/x-4"])
+    p.add_argument("--icc")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(f=cmd_init)
+    for name, f, help_ in (("fetch", cmd_fetch, "download renditions into cache/"), ("render", cmd_render, "write out/interior.pdf"),
+                           ("check", cmd_check, "structural PDF/X check"), ("build", cmd_build, "fetch + render + proof + check")):
+        p = sub.add_parser(name, help=help_)
+        p.add_argument("book", nargs="?", default="book.yaml")
+        p.add_argument("--force", action="store_true")
+        p.add_argument("--dpi", type=int, default=50)
+        p.set_defaults(f=f)
+    p = sub.add_parser("proof", help="render spread proofs")
+    p.add_argument("book", nargs="?", default="book.yaml")
+    p.add_argument("--dpi", type=int, default=50)
+    p.set_defaults(f=cmd_proof)
+    p = sub.add_parser("spine", help="spine width from page count and paper caliper")
+    p.add_argument("--pages", type=int, required=True)
+    p.add_argument("--caliper", type=float, required=True, help="paper caliper in µm")
+    p.add_argument("--binding", default="perfect", choices=list(presets.BINDINGS))
+    p.add_argument("--board", type=float, default=2.0)
+    p.set_defaults(f=cmd_spine)
     sub.add_parser("mcp", help="run the MCP server (stdio)").set_defaults(f=cmd_mcp)
     a = ap.parse_args(argv)
     try:

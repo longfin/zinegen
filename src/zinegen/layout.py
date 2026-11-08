@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 from .issues import Issue
 from .presets import BINDINGS
-from .spec import Book, Page
+from .spec import Book
 
 
 @dataclass
@@ -90,26 +90,26 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
     out: list[PageLayout] = []
 
     def page_box(index):
-        l, t, r, b = _margins(book, index)
-        return l, t, W - l - r, H - t - b
+        left, t, r, b = _margins(book, index)
+        return left, t, W - left - r, H - t - b
 
     for p in book.pages:
         d = p.data
         if p.span == 1:
             pl = PageLayout(p.index, p.template)
-            l, t, bw, bh = page_box(p.index)
+            left, t, bw, bh = page_box(p.index)
             if p.template == "title":
-                pl.texts.append(TextEl("title", str(d.get("title", book.title)), l, H * 0.38, bw, 30, "center"))
+                pl.texts.append(TextEl("title", str(d.get("title", book.title)), left, H * 0.38, bw, 30, "center"))
                 if d.get("subtitle"):
-                    pl.texts.append(TextEl("subtitle", str(d["subtitle"]), l, H * 0.38 + 16, bw, 12, "center"))
+                    pl.texts.append(TextEl("subtitle", str(d["subtitle"]), left, H * 0.38 + 16, bw, 12, "center"))
             elif p.template == "text":
                 if d.get("heading"):
-                    pl.texts.append(TextEl("heading", str(d["heading"]), l, t, bw, 12))
-                    pl.texts.append(TextEl("body", str(d.get("text", "")), l, t + 14, bw, bh - 14))
+                    pl.texts.append(TextEl("heading", str(d["heading"]), left, t, bw, 12))
+                    pl.texts.append(TextEl("body", str(d.get("text", "")), left, t + 14, bw, bh - 14))
                 else:
-                    pl.texts.append(TextEl("body", str(d.get("text", "")), l, t, bw, bh))
+                    pl.texts.append(TextEl("body", str(d.get("text", "")), left, t, bw, bh))
             elif p.template == "colophon":
-                pl.texts.append(TextEl("colophon", str(d.get("text", "")), l, H - float(book.margins["bottom"]) - 40, bw, 40))
+                pl.texts.append(TextEl("colophon", str(d.get("text", "")), left, H - float(book.margins["bottom"]) - 40, bw, 40))
             elif p.template == "full-bleed":
                 px = sizes[d["photo"]]
                 x, y, w, h = _cover(full, px, d.get("focal"))
@@ -117,12 +117,12 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
             elif p.template == "margin":
                 px = sizes[d["photo"]]
                 caption = str(d.get("caption") or "").strip()
-                box = (l, t, bw, bh - (cap_h if caption else 0))
+                box = (left, t, bw, bh - (cap_h if caption else 0))
                 valign = d.get("valign", "top")
                 x, y, w, h = _contain(box, px, ("center", valign))
                 pl.images.append(ImageEl(d["photo"], x, y, w, h, box, px))
                 if caption:
-                    pl.texts.append(TextEl("caption", caption, l, t + bh - cap_h + 2, bw, cap_h, d.get("caption_align", "left")))
+                    pl.texts.append(TextEl("caption", caption, left, t + bh - cap_h + 2, bw, cap_h, d.get("caption_align", "left")))
             elif p.template == "pair":
                 ids = d["photos"]
                 gap = float(d.get("gap_mm", 6))
@@ -131,17 +131,17 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
                 if stacked == "auto":
                     stacked = "column" if (a[0] >= a[1] and b[0] >= b[1]) else "row"
                 if stacked == "column":
-                    boxes = [(l, t, bw, (bh - gap) / 2), (l, t + (bh + gap) / 2, bw, (bh - gap) / 2)]
+                    boxes = [(left, t, bw, (bh - gap) / 2), (left, t + (bh + gap) / 2, bw, (bh - gap) / 2)]
                 else:
-                    boxes = [(l, t, (bw - gap) / 2, bh), (l + (bw + gap) / 2, t, (bw - gap) / 2, bh)]
-                for pid, px, box in zip(ids, (a, b), boxes):
+                    boxes = [(left, t, (bw - gap) / 2, bh), (left + (bw + gap) / 2, t, (bw - gap) / 2, bh)]
+                for pid, px, box in zip(ids, (a, b), boxes, strict=True):
                     x, y, w, h = _contain(box, px)
                     pl.images.append(ImageEl(pid, x, y, w, h, box, px))
                 caption = str(d.get("caption") or "").strip()
                 if caption:
-                    pl.texts.append(TextEl("caption", caption, l, H - float(book.margins["bottom"]) + 3, bw, cap_h))
+                    pl.texts.append(TextEl("caption", caption, left, H - float(book.margins["bottom"]) + 3, bw, cap_h))
             if book.page_numbers and p.template not in ("title", "blank", "full-bleed"):
-                pl.texts.append(TextEl("folio", str(p.index), l, H - float(book.margins["bottom"]) + 6, bw, 6,
+                pl.texts.append(TextEl("folio", str(p.index), left, H - float(book.margins["bottom"]) + 6, bw, 6,
                                        "right" if pl.recto else "left"))
             out.append(pl)
         else:
@@ -160,8 +160,8 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
             right_pl.images.append(ImageEl(d["photo"], x - W, y, w, h, full, px, crossing))
             caption = str(d.get("caption") or "").strip()
             if caption and p.template == "spread-margin":
-                l, t, bw, bh = page_box(p.index + 1)
-                right_pl.texts.append(TextEl("caption", caption, l, H - float(book.margins["bottom"]) + 3, bw, cap_h, "right"))
+                left, t, bw, bh = page_box(p.index + 1)
+                right_pl.texts.append(TextEl("caption", caption, left, H - float(book.margins["bottom"]) + 3, bw, cap_h, "right"))
             out += [left_pl, right_pl]
     return out
 

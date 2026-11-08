@@ -45,7 +45,7 @@ def resolve_trim(trim: dict | str) -> tuple[float, float]:
     try:
         return float(trim["width_mm"]), float(trim["height_mm"])
     except KeyError:
-        raise ValueError("trim needs either `preset` or `width_mm` + `height_mm`")
+        raise ValueError("trim needs either `preset` or `width_mm` + `height_mm`") from None
 
 
 def spine_mm(pages: int, caliper_um: float, binding: str = "perfect", cover_board_mm: float = 0.0) -> float:

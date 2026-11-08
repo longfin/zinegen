@@ -1,0 +1,25 @@
+# zinegen book spec, format version 1. Reference: docs/03-schemas.md
+# Photo ids are Lightroom asset ids (32 hex chars); `zinegen init --album <id>` fills them in for you.
+version: 1
+title: Autumn
+trim: { preset: A5 }            # or { width_mm: 200, height_mm: 200 }
+bleed_mm: 3
+binding: perfect                # saddle | perfect | hardcover | layflat
+paper: { caliper_um: 110 }      # only used for the spine / cover
+margins_mm: { top: 14, bottom: 16, inside: 16, outside: 12 }
+fonts: { body: Nanum Myeongjo, caption: Nanum Gothic, title: Nanum Myeongjo }
+output:
+  standard: pdf/x-1a            # pdf/x-1a for offset (CMYK), pdf/x-4 for POD (RGB kept)
+  icc: JapanColor2001Coated     # profile name found on this machine, or a path to an .icc file
+  intent: perceptual
+source: { album_id: "0123456789abcdef0123456789abcdef", size: fullsize }
+pages:
+  - { template: title, title: Autumn, subtitle: November 2026 }
+  - { template: blank }
+  - { template: full-bleed, photo: "00000000000000000000000000000001", focal: [0.5, 0.4] }
+  - { template: margin, photo: "00000000000000000000000000000002", caption: "Morning, by the river." }
+  - { template: margin, photo: "00000000000000000000000000000003", valign: center, note: maybe swap with the next one }
+  - { template: spread-full, photo: "00000000000000000000000000000004" }     # starts on a left page
+  - { template: pair, photos: ["00000000000000000000000000000005", "00000000000000000000000000000006"], direction: column }
+  - { template: text, heading: Afterword, text: "Written in one afternoon.\n\nSecond paragraph." }
+  - { template: colophon, text: "Autumn · first edition · printed on 110 g/m² matte" }
