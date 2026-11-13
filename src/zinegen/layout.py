@@ -11,7 +11,8 @@ from .issues import Issue
 from .presets import BINDINGS
 from .spec import Book
 
-CAPTION_GAP_MM = 2.0   # space between a photo (block) and its caption
+CAPTION_GAP_MM = 2.0     # space between a photo (block) and its caption
+MIN_PHOTO_BOX_MM = 5.0   # smaller photo boxes mean the margins/gap/caption leave no room: NO_ROOM, nothing placed
 
 
 @dataclass
@@ -48,6 +49,16 @@ class PageLayout:
     template: str
     images: list[ImageEl] = field(default_factory=list)
     texts: list[TextEl] = field(default_factory=list)
+    issues: list[Issue] = field(default_factory=list)
+
+    def fits(self, boxes, why: str) -> bool:
+        """False (and a NO_ROOM error) when any photo box is smaller than MIN_PHOTO_BOX_MM on a side."""
+        small = min(min(bx[2], bx[3]) for bx in boxes)
+        if small >= MIN_PHOTO_BOX_MM:
+            return True
+        self.issues.append(Issue("NO_ROOM", f"photo box would be {small:.1f} mm on its short side "
+                                 f"(minimum {MIN_PHOTO_BOX_MM:.0f} mm); photos not placed. Reduce {why}", page=self.index))
+        return False
 
     @property
     def recto(self):
@@ -122,8 +133,9 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
                 caption = str(d.get("caption") or "").strip()
                 box = (left, t, bw, bh - (cap_h if caption else 0))
                 valign = d.get("valign", "top")
-                x, y, w, h = _contain(box, px, ("center", valign))
-                pl.images.append(ImageEl(d["photo"], x, y, w, h, box, px))
+                if pl.fits([box], "the margins or caption_pt"):
+                    x, y, w, h = _contain(box, px, ("center", valign))
+                    pl.images.append(ImageEl(d["photo"], x, y, w, h, box, px))
                 if caption:
                     pl.texts.append(TextEl("caption", caption, left, t + bh - cap_h + CAPTION_GAP_MM, bw, cap_h,
                                            d.get("caption_align", "left")))
@@ -140,16 +152,16 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
                     boxes = [(left, t, bw, (ph - gap) / 2), (left, t + (ph + gap) / 2, bw, (ph - gap) / 2)]
                 else:
                     boxes = [(left, t, (bw - gap) / 2, ph), (left + (bw + gap) / 2, t, (bw - gap) / 2, ph)]
-                for pid, px, box in zip(ids, (a, b), boxes, strict=True):
-                    x, y, w, h = _contain(box, px)
-                    pl.images.append(ImageEl(pid, x, y, w, h, box, px))
-                if caption:
-                    # under the photo block (not at the page bottom, where it would merge with the folio),
-                    # aligned to the block's left edge and width
-                    x0 = min(im.x for im in pl.images)
-                    x1 = max(im.x + im.w for im in pl.images)
-                    y1 = max(im.y + im.h for im in pl.images)
-                    pl.texts.append(TextEl("caption", caption, x0, y1 + CAPTION_GAP_MM, x1 - x0, cap_h))
+                if pl.fits(boxes, "gap_mm, the margins or caption_pt"):
+                    for pid, px, box in zip(ids, (a, b), boxes, strict=True):
+                        x, y, w, h = _contain(box, px)
+                        pl.images.append(ImageEl(pid, x, y, w, h, box, px))
+                    if caption:
+                        # under the photo block (not at the page bottom, where it would merge with the folio),
+                        # across the full margin-box width: the box only holds two lines, and a narrow block
+                        # (two portraits stacked) would otherwise clip a caption that fits at full width
+                        y1 = max(im.y + im.h for im in pl.images)
+                        pl.texts.append(TextEl("caption", caption, left, y1 + CAPTION_GAP_MM, bw, cap_h))
             if book.page_numbers and p.template not in ("title", "blank", "full-bleed"):
                 pl.texts.append(TextEl("folio", str(p.index), left, H - float(book.margins["bottom"]) + 6, bw, 6,
                                        "right" if pl.recto else "left"))
@@ -182,8 +194,9 @@ REPORT_VERSION = 1
 def report(book: Book, pages: list[PageLayout]) -> dict:
     """report.json (version 1): placed images with effective resolution, plus structured issues."""
     items, issues = [], list(book.issues)
-    seen, crossed = set(), set()
+    seen, flagged = set(), set()
     for pl in pages:
+        issues += pl.issues
         for im in pl.images:
             key = (pl.index, im.photo)
             if key in seen:
@@ -193,13 +206,16 @@ def report(book: Book, pages: list[PageLayout]) -> dict:
             level = "ok" if dpi >= 300 else ("low" if dpi >= 200 else "bad")
             items.append({"page": pl.index, "photo": im.photo, "template": pl.template, "placed_mm": [round(im.w, 1), round(im.h, 1)],
                           "px": list(im.px), "dpi": dpi, "level": level, "crossing_gutter": im.crossing_gutter})
+            # images[] keeps one entry per page, but a spread photo is one placement: its issues are raised
+            # once, on the verso page of the spread
+            placement = (im.spread if im.spread is not None else pl.index, im.photo)
+            if placement in flagged:
+                continue
+            flagged.add(placement)
             if level != "ok":
                 issues.append(Issue("BAD_DPI" if level == "bad" else "LOW_DPI",
                                     f"{dpi} dpi at {im.w:.0f}×{im.h:.0f} mm", page=pl.index, photo=im.photo))
-            # one issue per crossing photo, on the verso page of the spread (images[] keeps one entry per page)
-            crossing_key = (im.spread if im.spread is not None else pl.index, im.photo)
-            if im.crossing_gutter and not BINDINGS[book.binding]["crossing_ok"] and crossing_key not in crossed:
-                crossed.add(crossing_key)
+            if im.crossing_gutter and not BINDINGS[book.binding]["crossing_ok"]:
                 issues.append(Issue("GUTTER_CROSSING", f"spread image crosses the gutter; {book.binding} binding hides ~6-8 mm at the spine",
                                     page=pl.index, photo=im.photo))
     return {"version": REPORT_VERSION, "title": book.title, "pages": book.page_count,

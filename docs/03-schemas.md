@@ -77,7 +77,7 @@ rendition's pixel size is authoritative for layout.
 ```
 
 `placed_mm` is the full scaled image size (a cover placement is larger than the box it fills), so
-`dpi = px[0] / (placed_mm[0] / 25.4)`. `level`: ok ≥ 300, low ≥ 200, bad < 200. Spread images appear once per page.
+`dpi = px[0] / (placed_mm[0] / 25.4)`. `level`: ok ≥ 300, low ≥ 200, bad < 200. Spread images appear once per page; their issues (dpi, gutter) are raised once, on the verso page.
 
 ## 4. `out/check.json` — PDF/X self-check (version 1)
 
@@ -103,6 +103,7 @@ rendition's pixel size is authoritative for layout.
 | `LOW_DPI` | warning | layout |
 | `BAD_DPI` | error | layout |
 | `GUTTER_CROSSING` | warning | layout (perfect/hardcover only) |
+| `NO_ROOM` | error | layout (margins, `gap_mm` or caption leave a photo box under 5 mm; photos not placed) |
 | `NO_OUTPUT_INTENT`, `NO_DEST_PROFILE`, `NO_PDFX_VERSION`, `PDF_VERSION` | error | check |
 | `NO_TRIMBOX`, `TRIMBOX_SIZE`, `BLEED_SMALL` | error | check |
 | `NO_BLEEDBOX` | warning | check |
