@@ -97,8 +97,10 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     pdf_path = book.out_dir / "interior.pdf"
     std = STANDARDS[book.output["standard"]]
     doc = weasyprint.HTML(string=html, base_url=str(html_path))
+    # jpeg_quality=None and dpi=None keep WeasyPrint's JPEG passthrough: any quality re-encodes every JPEG,
+    # and dpi thumbnails (and re-encodes) images above it.
     doc.write_pdf(pdf_path, pdf_variant=std, output_intent="--press" if icc_uri else None,
-                  jpeg_quality=95, dpi=1200, optimize_images=False)
+                  jpeg_quality=None, dpi=None, optimize_images=False)
     postprocess(pdf_path, book)
     rep["pdf"] = str(pdf_path)
     rep["html"] = str(html_path)

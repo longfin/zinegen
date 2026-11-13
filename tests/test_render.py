@@ -73,6 +73,20 @@ def test_render_and_check_pdfx4(book_dir: Path):
         assert [round(float(v)) for v in p.pages[0].TrimBox] == [0, 0, 420, 595]
 
 
+def test_pdfx4_embeds_source_bytes_unchanged(book_dir: Path):
+    """No second lossy generation: WeasyPrint must pass the cached JPEGs through untouched, which also
+    keeps their embedded ICC profile for the ICCBased tagging."""
+    import hashlib
+
+    import pikepdf
+    book = spec.load(book_dir / "book.yaml")
+    render.render(book)
+    src = {hashlib.sha1(f.read_bytes()).hexdigest() for f in (book_dir / "cache").glob("*.jpg")}
+    with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
+        embedded = {hashlib.sha1(x.read_raw_bytes()).hexdigest() for page in p.pages for _, x in page.images.items()}
+    assert embedded == src
+
+
 @pytest.mark.skipif(not shutil.which("gs"), reason="ghostscript not installed")
 def test_proof_spreads(book_dir: Path):
     from zinegen import proof
