@@ -51,6 +51,27 @@ def _latest(d, key):
     return v.get(key)
 
 
+def _keywords(subject) -> list[str]:
+    """Keyword strings from `xmp.dc.subject`.
+
+    The Partner API sends the bag as a set, `{"keyword": true, ...}` (checked against a real catalog).
+    An `{index: value}` dict or a plain list is also accepted, in case another endpoint serialises the
+    bag that way. Non-string entries are dropped rather than leaking `true` into the keyword list.
+    """
+    if isinstance(subject, str):
+        return [subject]
+    if isinstance(subject, list):
+        return [k for k in subject if isinstance(k, str)]
+    if not isinstance(subject, dict):
+        return []
+    if subject and all(isinstance(v, bool) for v in subject.values()):  # {keyword: true}
+        return [k for k, v in subject.items() if v and isinstance(k, str)]
+    items = list(subject.items())
+    if all(str(k).isdigit() for k, _ in items):  # {index: value}
+        items.sort(key=lambda kv: int(kv[0]))
+    return [v for _, v in items if isinstance(v, str)]
+
+
 def _photo(album_asset: dict) -> Photo:
     a = album_asset.get("asset", album_asset)
     p = a.get("payload", {})
@@ -59,9 +80,6 @@ def _photo(album_asset: dict) -> Photo:
     tiff = xmp.get("tiff", {})
     imp = p.get("importSource", {})
     dev = p.get("develop", {})
-    subject = dc.get("subject")
-    if isinstance(subject, dict):  # xmp bags sometimes arrive as {index: value}
-        subject = list(subject.values())
     return Photo(
         id=a["id"],
         file=imp.get("fileName"),
@@ -69,7 +87,7 @@ def _photo(album_asset: dict) -> Photo:
         order=album_asset.get("payload", {}).get("order") if "asset" in album_asset else None,
         title=dc.get("title") if isinstance(dc.get("title"), str) else None,
         caption=dc.get("description") if isinstance(dc.get("description"), str) else None,
-        keywords=list(subject) if isinstance(subject, list) else [],
+        keywords=_keywords(dc.get("subject")),
         rating=_latest(p.get("ratings"), "rating"),
         flag=_latest(p.get("reviews"), "flag"),
         camera=" ".join(filter(None, [tiff.get("Make"), tiff.get("Model")])) or None,
