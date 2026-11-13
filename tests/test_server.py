@@ -179,7 +179,11 @@ def test_init_unknown_icc_is_error(lightroom, tmp_path):
 
 
 NOISY_SERVER = """
-import sys, threading, time
+import io, os, sys, threading, time
+if sys.argv[1] == "fallback":
+    # sys.stdout no longer backed by fd 1: mcp cannot divert fd 1 and serves the wire through
+    # sys.stdout.buffer in place (its documented fallback)
+    sys.stdout = io.TextIOWrapper(os.fdopen(os.dup(1), "wb"), encoding="utf-8")
 from zinegen import server
 started = threading.Barrier(2)
 
@@ -195,8 +199,10 @@ server.main()
 """
 
 
-def test_stray_print_never_reaches_protocol_stdout(tmp_path):
-    """Over real stdio, prints inside overlapping tool calls go to stderr, also after the server exits."""
+@pytest.mark.parametrize("mode", ["divert", "fallback"])
+def test_stray_print_never_reaches_protocol_stdout(tmp_path, mode):
+    """Over real stdio, prints inside overlapping tool calls go to stderr, also after the server exits,
+    whether or not mcp could divert fd 1."""
     import subprocess
     import sys
     msgs = [{"jsonrpc": "2.0", "id": 0, "method": "initialize",
@@ -204,7 +210,7 @@ def test_stray_print_never_reaches_protocol_stdout(tmp_path):
             {"jsonrpc": "2.0", "method": "notifications/initialized"}]
     msgs += [{"jsonrpc": "2.0", "id": n, "method": "tools/call", "params": {"name": "zz_noisy", "arguments": {"n": n}}}
              for n in (1, 2)]
-    p = subprocess.Popen([sys.executable, "-c", NOISY_SERVER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    p = subprocess.Popen([sys.executable, "-c", NOISY_SERVER, mode], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, cwd=tmp_path)
     p.stdin.write(b"".join(json.dumps(m).encode() + b"\n" for m in msgs))
     p.stdin.flush()
@@ -332,6 +338,11 @@ def test_cli_init_exists(lightroom, tmp_path, capsys, monkeypatch):
      "GET assets/a/renditions/fullsize failed"),
     ("GET https://lr.adobe.io/v2/catalogs/c0ffee returned 500", "GET catalog returned 500"),
     ("catalog /v2/catalogs/c0ffee", "catalog catalog"),
+    # only the Lightroom shapes: other hosts, non-hex ids and mid-path matches are left alone
+    ("/Users/me/photos/v2/catalogs/notes.txt not found", "/Users/me/photos/v2/catalogs/notes.txt not found"),
+    ("docs at http://example.com/v2/catalogs/abc/x", "docs at http://example.com/v2/catalogs/abc/x"),
+    ("url: https://lr.adobe.io/v2/catalogs/abc123, retry", "url: catalog, retry"),
+    ("see /v2/catalogs/abcdef.txt", "see /v2/catalogs/abcdef.txt"),
 ])
 def test_for_agent(msg, want):
     assert server._for_agent(msg) == want

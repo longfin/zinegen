@@ -28,8 +28,24 @@ from . import cli, presets, spec
 
 MAX_PROOF_IMAGES = 12
 
+_STDIO_MAIN = False   # set by main(); in-process clients (tests) leave sys.stdout alone
+_wire_stdout = None   # the replaced sys.stdout, kept alive: in mcp's fallback the transport writes to its buffer
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_server):
+    """Runs after the stdio transport has taken its own reference to the protocol stream (see main)."""
+    global _wire_stdout
+    if _STDIO_MAIN and sys.stdout is not sys.stderr:
+        # Dropping the last reference would close the text wrapper and with it the buffer the
+        # transport may be serving in place (mcp issue #1933), so keep it.
+        _wire_stdout, sys.stdout = sys.stdout, sys.stderr
+    yield {}
+
+
 mcp = MCPServer(
     "zinegen",
+    lifespan=_lifespan,
     version=cli.version(),
     instructions=(
         "Typeset a photobook from a Lightroom album into a print-ready PDF/X. Workflow: zg_list_albums -> "
@@ -50,9 +66,11 @@ AlbumId = Annotated[str, Field(description="Lightroom album id (32 hex character
 _CLI_TO_TOOL = {"albums": "zg_list_albums", "init": "zg_init_book", "fetch": "zg_fetch", "render": "zg_render",
                 "proof": "zg_proof", "check": "zg_check", "spine": "zg_spine"}
 _CLI_RE = re.compile(r"`zinegen (" + "|".join(_CLI_TO_TOOL) + r")`")
-# Lightroom API paths carry the catalog id: `GET https://lr.adobe.io/v2/catalogs/<id>/albums/x ...`.
-# `<base>/v2/catalogs/<id>/rest` becomes `rest`; a bare `<base>/v2/catalogs/<id>` becomes `catalog`.
-_LR_PATH_RE = re.compile(r"(?:https?://[^/\s]*)?/v2/catalogs/[^/\s]+(/?)")
+# lr_mcp.client messages carry API paths with the catalog id, either relative after a space
+# (`GET /v2/catalogs/<id>/albums/x returned 404`) or absolute (`GET https://lr.adobe.io/v2/catalogs/<id>/...
+# failed`). Only those shapes match: the Lightroom host or a path starting a word, then a hex id that ends
+# the path segment. `.../<id>/rest` becomes `rest`; a bare `.../<id>` becomes `catalog`.
+_LR_PATH_RE = re.compile(r"(?:https://lr\.adobe\.io|(?<![^\s'\"(\[]))/v2/catalogs/[0-9a-f]+(?![\w.-])(/?)")
 
 
 def _for_agent(msg: str) -> str:
@@ -78,8 +96,8 @@ def _tool(fn):
         except (ValueError, OSError, RuntimeError) as e:  # SpecError is a ValueError; FileNotFound etc. are OSError
             raise ToolError(_for_agent(str(e))) from e
         finally:
-            # A stray print may sit in sys.stdout's buffer. Flush it now, while the stdio transport points
-            # fd 1 at stderr (see main), so it is never written after fd 1 is handed back to the wire.
+            # Under main() sys.stdout is already stderr; the flush only matters if something swapped it
+            # back. It runs while fd 1 still points at stderr, so nothing stays buffered for shutdown.
             with contextlib.suppress(Exception):
                 sys.stdout.flush()
     return mcp.tool()(wrapper)
@@ -282,12 +300,14 @@ def zg_spine(
 
 
 def main():
-    # While it serves stdio, mcp points fd 1 at stderr for the whole process and writes JSON-RPC to a
-    # private duplicate of the original fd 1 (mcp.server.stdio.stdio_server). Prints therefore only reach
-    # the wire if they are still buffered when fd 1 is restored at shutdown; line buffering and the flush
-    # after every tool call (_tool) make sure nothing is left in the buffer by then.
-    with contextlib.suppress(AttributeError, ValueError):
-        sys.stdout.reconfigure(line_buffering=True)
+    # mcp.server.stdio.stdio_server reads `sys.stdout` once, when it opens the transport: normally it then
+    # writes JSON-RPC to a private duplicate of fd 1 and points fd 1 at stderr; when it cannot (its fallback),
+    # it writes to `sys.stdout.buffer` in place. Either way it keeps its own reference and never looks at
+    # `sys.stdout` again, so once the server is running (_lifespan) `sys.stdout` is pointed at stderr for
+    # the rest of the process and Python prints can never reach the wire in either mode.
+    global _STDIO_MAIN
+    _STDIO_MAIN = True
+    sys.stdout.flush()   # nothing printed before the transport opens may be flushed onto the wire later
     mcp.run()
 
 
