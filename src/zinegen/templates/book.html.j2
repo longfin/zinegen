@@ -12,7 +12,11 @@ html, body { margin: 0; padding: 0; }
 .page { position: relative; width: {{ W }}mm; height: {{ H }}mm; page-break-after: always; overflow: visible; }
 .page:last-child { page-break-after: auto; }
 .clip { position: absolute; overflow: hidden; }
-.clip img { position: absolute; display: block; }
+{# image-orientation: none keeps WeasyPrint's JPEG passthrough. With the default (from-image) it calls
+   ImageOps.exif_transpose on any image that has an EXIF block, which always returns a copy, and then
+   re-encodes it at Pillow's default quality without its ICC profile. render.prepare_images applies EXIF
+   orientation itself, so every file referenced here is already upright. #}
+.clip img { position: absolute; display: block; image-orientation: none; }
 .t { position: absolute; color: device-cmyk(0 0 0 1); white-space: pre-wrap; overflow: hidden; }
 .title { font-family: "{{ fonts.title }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ type.title_pt }}pt; line-height: 1.3; letter-spacing: 0.02em; }
 .subtitle { font-family: "{{ fonts.body }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ type.body_pt + 1 }}pt; line-height: 1.5; }

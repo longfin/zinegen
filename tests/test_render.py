@@ -20,10 +20,18 @@ _setup_dyld()
 weasyprint = pytest.importorskip("weasyprint")
 
 
-def synthetic_jpeg(path: Path, w: int, h: int):
+def synthetic_jpeg(path: Path, w: int, h: int, orientation: int | None = None):
+    """Like a Lightroom rendition: ICC-tagged and with an EXIF block (camera, date; Orientation only when
+    given). WeasyPrint used to re-encode any JPEG with an EXIF block, so EXIF-free test files hid that."""
     im = Image.linear_gradient("L").resize((w, h)).convert("RGB")
     icc = (files("zinegen") / "templates" / "sRGB2014.icc").read_bytes()
-    im.save(path, quality=90, icc_profile=icc)
+    exif = Image.Exif()
+    exif[0x010F] = "zinegen-test"            # Make
+    exif[0x0110] = "synthetic"               # Model
+    exif[0x0132] = "2026:11:14 10:00:00"     # DateTime
+    if orientation is not None:
+        exif[0x0112] = orientation
+    im.save(path, quality=90, icc_profile=icc, exif=exif)
 
 
 @pytest.fixture
@@ -80,7 +88,11 @@ def test_pdfx4_embeds_source_bytes_unchanged(book_dir: Path):
 
     import pikepdf
     book = spec.load(book_dir / "book.yaml")
+    for f in (book_dir / "cache").glob("*.jpg"):
+        with Image.open(f) as im:
+            assert "exif" in im.info and 0x0112 not in im.getexif()      # EXIF block, no Orientation
     rep = render.render(book)
+    assert not any(i["code"] == "ORIENTATION_REENCODED" for i in rep["issues"])
     src = {hashlib.sha1(f.read_bytes()).hexdigest() for f in (book_dir / "cache").glob("*.jpg")}
     with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
         embedded = {hashlib.sha1(x.read_raw_bytes()).hexdigest() for page in p.pages for _, x in page.images.items()}
@@ -152,11 +164,22 @@ def test_missing_image_fails_render(book_dir: Path, monkeypatch, capsys):
 
 
 def _exif_rotated_jpeg(path: Path, w: int, h: int, orientation: int):
-    from importlib.resources import files as res
-    im = Image.linear_gradient("L").resize((w, h)).convert("RGB")
-    exif = Image.Exif()
-    exif[0x0112] = orientation
-    im.save(path, quality=90, exif=exif, icc_profile=(res("zinegen") / "templates" / "sRGB2014.icc").read_bytes())
+    synthetic_jpeg(path, w, h, orientation)
+
+
+def test_orientation_1_passes_through_pdfx4(book_dir: Path):
+    """Orientation=1 (upright) is the common tagged case: embedded byte for byte, no warning."""
+    import hashlib
+
+    import pikepdf
+    synthetic_jpeg(book_dir / "cache" / f"{B}.jpg", 1600, 2400, orientation=1)
+    book = spec.load(book_dir / "book.yaml")
+    rep = render.render(book)
+    assert not any(i["code"] == "ORIENTATION_REENCODED" for i in rep["issues"])
+    assert not (book_dir / "cache" / "upright").exists()
+    with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
+        embedded = {hashlib.sha1(x.read_raw_bytes()).hexdigest() for page in p.pages for _, x in page.images.items()}
+    assert embedded == {hashlib.sha1(f.read_bytes()).hexdigest() for f in (book_dir / "cache").glob("*.jpg")}
 
 
 def test_exif_orientation_pdfx4(book_dir: Path):
@@ -174,7 +197,7 @@ def test_exif_orientation_pdfx4(book_dir: Path):
     upright = list((book_dir / "cache" / "upright").glob("*.upright.jpg"))
     assert len(upright) == 1
     with Image.open(upright[0]) as im:
-        assert im.size == (1600, 2400) and im.getexif().get(0x0112) is None and im.info.get("icc_profile")
+        assert im.size == (1600, 2400) and "exif" not in im.info and im.info.get("icc_profile")
     with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
         streams = {hashlib.sha1(x.read_raw_bytes()).hexdigest(): (int(x.Width), int(x.Height))
                    for page in p.pages for _, x in page.images.items()}
@@ -191,6 +214,9 @@ def test_exif_orientation_pdfx1a(book_dir: Path, cmyk_icc: Path):
     assert not any(i["code"] == "ORIENTATION_REENCODED" for i in rep["issues"])   # one conversion anyway
     b = [i for i in rep["images"] if i["photo"] == B]
     assert b and all(i["source_px"] == [1600, 2400] and i["px"][0] < i["px"][1] for i in b)
+    for f in (book_dir / "cache" / "cmyk").glob("*.cmyk.jpg"):
+        with Image.open(f) as im:
+            assert "exif" not in im.info               # upright pixels, nothing left for anyone to rotate
     assert check.check(book)["ok"]
 
 
@@ -239,3 +265,4 @@ def test_proof_spreads(book_dir: Path):
     out = proof.proof(book, dpi=20)
     assert len(out) == 5          # 8 pages: [1], [2,3], [4,5], [6,7], [8]
     assert out[0].name == "spread-01.png"
+
