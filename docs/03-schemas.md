@@ -111,6 +111,7 @@ and copy its `photos.json` over (`--force` in the book directory would overwrite
 | `BAD_DPI` | error | layout |
 | `GUTTER_CROSSING` | warning | layout (perfect/hardcover only) |
 | `NO_ROOM` | error | layout (margins, `gap_mm` or caption leave a photo box under 5 mm; photos not placed) |
+| `NO_OUTPUT_PROFILE` | error | render: x-4 with `output.icc` unset (a set but unresolvable profile fails the render instead) |
 | `NO_OUTPUT_INTENT`, `NO_DEST_PROFILE`, `NO_PDFX_VERSION`, `PDF_VERSION` | error | check |
 | `NO_TRIMBOX`, `TRIMBOX_SIZE`, `BLEED_SMALL` | error | check |
 | `NO_BLEEDBOX` | warning | check |
@@ -127,3 +128,4 @@ and copy its `photos.json` over (`--force` in the book directory would overwrite
 ## Migration notes
 
 - v1: initial. Pre-version specs need `version: 1` added and `_file` hints renamed to `note`.
+- v1, added (no version bump): issue code `NO_OUTPUT_PROFILE`.

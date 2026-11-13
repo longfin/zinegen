@@ -11,6 +11,7 @@ import jinja2
 
 from . import color
 from . import layout as _layout
+from .issues import Issue
 from .spec import Book
 
 STANDARDS = {"pdf/x-1a": "pdf/x-1a", "pdf/x-4": "pdf/x-4"}
@@ -50,17 +51,37 @@ def source_files(book: Book) -> dict[str, Path]:
     return files
 
 
-def prepare_images(book: Book, log=None) -> tuple[dict[str, Path], dict[str, tuple[int, int]], dict]:
-    """Return (photo id -> file to embed, photo id -> pixel size, colour info)."""
+def resolve_icc(book: Book) -> Path | None:
+    """The output-intent profile, or None when `output.icc` is unset on PDF/X-4.
+
+    A profile that is named but cannot be found is an error on both standards: it is almost always a typo,
+    and the only PDF we could write without it has no output intent, which no printer accepts as PDF/X.
+    """
+    name = book.output.get("icc")
     std = book.output["standard"]
-    srcs = source_files(book)
-    info = {"standard": std}
-    icc = color.find_profile(book.output.get("icc"))
+    if name:
+        icc = color.find_profile(name)
+        if icc is None:
+            where = ", ".join(str(d) for d in color.ADOBE_PROFILE_DIRS)
+            raise ValueError(f"output.icc {name!r} not found: it is not an existing file, and no {name}, {name}.icc "
+                             f"or {name}.icm exists in {where}. Use a full path, or a name that `zinegen doctor` lists.")
+    else:
+        icc = None
     if std == "pdf/x-1a":
         if not icc:
             raise ValueError("pdf/x-1a needs `output.icc` (CMYK profile path or name, e.g. JapanColor2001Coated)")
         if color.profile_components(icc) != ["c", "m", "y", "k"]:
             raise ValueError(f"pdf/x-1a needs a CMYK output profile; {icc.name} is not CMYK")
+    return icc
+
+
+def prepare_images(book: Book, log=None) -> tuple[dict[str, Path], dict[str, tuple[int, int]], dict]:
+    """Return (photo id -> file to embed, photo id -> pixel size, colour info)."""
+    std = book.output["standard"]
+    srcs = source_files(book)
+    info = {"standard": std}
+    icc = resolve_icc(book)
+    if std == "pdf/x-1a":
         files = {pid: color.to_cmyk(f, icc, book.cache_dir.resolve() / "cmyk", book.output.get("intent", "perceptual"),
                                     int(book.output.get("jpeg_quality", 95)), log) for pid, f in srcs.items()}
     else:
@@ -83,6 +104,10 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     pages = _layout.layout(book, sizes)
     rep = _layout.report(book, pages)
     rep.update(cinfo)
+    if not cinfo["icc"]:
+        rep["issues"].append(Issue("NO_OUTPUT_PROFILE", "output.icc is not set, so the PDF has no output intent and "
+                                   "is not valid PDF/X-4; fine for proofs, not for print. Set output.icc to the "
+                                   "printer's profile.").to_dict())
     env = jinja2.Environment(loader=jinja2.PackageLoader("zinegen", "templates"), autoescape=True)
     tpl = env.get_template("book.html.j2")
     icc_uri = Path(cinfo["icc"]).resolve().as_uri() if cinfo["icc"] else None

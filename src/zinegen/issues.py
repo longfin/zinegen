@@ -12,6 +12,8 @@ CODES = {
     "BAD_DPI": "error",
     "GUTTER_CROSSING": "warning",
     "NO_ROOM": "error",
+    # render
+    "NO_OUTPUT_PROFILE": "error",
     # pdf check
     "NO_OUTPUT_INTENT": "error",
     "NO_DEST_PROFILE": "error",

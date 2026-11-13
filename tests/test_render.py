@@ -87,6 +87,30 @@ def test_pdfx4_embeds_source_bytes_unchanged(book_dir: Path):
     assert embedded == src
 
 
+def _set_output(book_dir: Path, **output):
+    doc = yaml.safe_load((book_dir / "book.yaml").read_text())
+    doc["output"].update(output)
+    (book_dir / "book.yaml").write_text(yaml.safe_dump(doc))
+
+
+@pytest.mark.parametrize("standard", ["pdf/x-4", "pdf/x-1a"])
+def test_unresolvable_icc_fails_render(book_dir: Path, standard: str):
+    _set_output(book_dir, standard=standard, icc="NoSuchProfile")
+    book = spec.load(book_dir / "book.yaml")
+    with pytest.raises(ValueError, match="'NoSuchProfile' not found"):
+        render.render(book)
+    assert not (book_dir / "out" / "interior.pdf").exists()
+
+
+def test_unset_icc_on_pdfx4_is_reported(book_dir: Path):
+    _set_output(book_dir, icc=None)
+    book = spec.load(book_dir / "book.yaml")
+    rep = render.render(book)
+    codes = {i["code"]: i["level"] for i in rep["issues"]}
+    assert codes.get("NO_OUTPUT_PROFILE") == "error"
+    assert not check.check(book)["ok"]
+
+
 @pytest.mark.skipif(not shutil.which("gs"), reason="ghostscript not installed")
 def test_proof_spreads(book_dir: Path):
     from zinegen import proof
