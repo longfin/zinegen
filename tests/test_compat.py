@@ -21,6 +21,12 @@ def _asset(subject):
     ("sea", ["sea"]),
     ({}, []),
     (None, []),
+    # shapes never observed: must not crash and must not drop a truthy string key
+    ({"²": "a"}, ["²"]),                                          # isdigit() but not int()-able
+    ({"sea": True, "0": "x"}, ["x", "sea"]),                      # mixed bag
+    ({"sea": 1}, ["sea"]),                                        # truthy non-bool value
+    ({"2026": True}, ["2026"]),                                   # numeric keyword in a set bag
+    ({"sea": True, "1": "sea"}, ["sea"]),                         # duplicates removed
 ])
 def test_keywords_shapes(subject, expected):
     assert compat._photo(_asset(subject)).keywords == expected

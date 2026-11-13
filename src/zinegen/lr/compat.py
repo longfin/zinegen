@@ -57,20 +57,36 @@ def _keywords(subject) -> list[str]:
 
     The Partner API sends the bag as a set, `{"keyword": true, ...}` (checked against a real catalog).
     An `{index: value}` dict or a plain list is also accepted, in case another endpoint serialises the
-    bag that way. Non-string entries are dropped rather than leaking `true` into the keyword list.
+    bag that way. Per dict entry: an integer key (or a decimal-digit string) with a string value is an
+    index entry and yields the value; any other string key with a truthy value yields the key. Index
+    entries come first, in index order. Non-string results are dropped, duplicates removed; never raises.
     """
     if isinstance(subject, str):
         return [subject]
     if isinstance(subject, list):
-        return [k for k in subject if isinstance(k, str)]
+        return list(dict.fromkeys(k for k in subject if isinstance(k, str)))
     if not isinstance(subject, dict):
         return []
-    if subject and all(isinstance(v, bool) for v in subject.values()):  # {keyword: true}
-        return [k for k, v in subject.items() if v and isinstance(k, str)]
-    items = list(subject.items())
-    if all(str(k).isdigit() for k, _ in items):  # {index: value}
-        items.sort(key=lambda kv: int(kv[0]))
-    return [v for _, v in items if isinstance(v, str)]
+    indexed, named = [], []
+    for k, v in subject.items():
+        i = _index(k)
+        if i is not None and isinstance(v, str):
+            indexed.append((i, v))
+        elif isinstance(k, str) and v:
+            named.append(k)
+    indexed.sort(key=lambda iv: iv[0])
+    return list(dict.fromkeys([v for _, v in indexed] + named))
+
+
+def _index(k) -> int | None:
+    if isinstance(k, int) and not isinstance(k, bool):
+        return k
+    if isinstance(k, str) and k.isdecimal():
+        try:
+            return int(k)
+        except ValueError:
+            return None
+    return None
 
 
 def _photo(album_asset: dict) -> Photo:
