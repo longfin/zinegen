@@ -24,9 +24,10 @@ Unknown keys are errors. Units are in the key name: `_mm`, `_um`, `_pt`.
 | `page_numbers` | bool | false | not on title/blank/full-bleed pages |
 | `marks` | bool | true | crop + registration marks |
 | `output.standard` | `pdf/x-1a` `pdf/x-4` | pdf/x-1a | |
-| `output.icc` | path or profile name, or null | null | required for x-1a; also the output intent for x-4 |
+| `output.icc` | path or profile name, or null | null | required for x-1a; also the output intent for x-4. A relative path is resolved against the book directory (where book.yaml is), never the working directory; a bare name is also searched in the usual profile directories |
 | `output.intent` | perceptual / relative-colorimetric / saturation / absolute-colorimetric | perceptual | |
 | `output.jpeg_quality` | int 50–100 | 95 | CMYK conversion only; x-4 embeds source bytes |
+| `output.max_dpi` | int 150–2400, or null | 350 | x-1a only: each photo is resampled during its single CMYK conversion so its most demanding placement gets this effective resolution (never upsampled); a photo at most 1.1× above it (`render.RESAMPLE_TOLERANCE`) is converted at its source size. null keeps every source pixel. Below 300 every downsampled image is reported `LOW_DPI` (below 200 `BAD_DPI`). x-4 embeds source bytes |
 | `source.album_id` | 32 hex | – | |
 | `source.size` | 640 / 1280 / 2048 / 2560 / fullsize | fullsize | |
 | `pages[]` | list of page items | required | see below |
@@ -77,14 +78,18 @@ and copy its `photos.json` over (`--force` in the book directory would overwrite
 ```json
 {"version": 1, "title": "…", "pages": 28, "trim_mm": [148, 210], "bleed_mm": 3, "binding": "perfect",
  "standard": "pdf/x-1a", "icc": "/path/JapanColor2001Coated.icc", "icc_description": "Japan Color 2001 Coated",
+ "max_dpi": 350,
  "pdf": "…/out/interior.pdf", "html": "…/out/interior.html",
  "images": [{"page": 3, "photo": "<32hex>", "template": "full-bleed", "placed_mm": [324.0, 216.0],
-             "px": [6192, 4128], "dpi": 485, "level": "ok | low | bad", "crossing_gutter": false}],
+             "px": [4465, 2977], "source_px": [6192, 4128], "dpi": 350, "level": "ok | low | bad", "crossing_gutter": false}],
  "issues": [ …issue… ]}
 ```
 
 `placed_mm` is the full scaled image size (a cover placement is larger than the box it fills), so
 `dpi = px[0] / (placed_mm[0] / 25.4)`. `level`: ok ≥ 300, low ≥ 200, bad < 200. Spread images appear once per page; their issues (dpi, gutter) are raised once, on the verso page.
+`px` is the pixel size of the image actually embedded in the PDF and `source_px` that of the cached rendition;
+they differ only on x-1a when `max_dpi` downsampled the photo. Layout geometry always comes from `source_px`.
+`max_dpi` is the setting applied to the embedded images (null on x-4 or when disabled).
 
 ## 4. `out/check.json` — PDF/X self-check (version 1)
 
@@ -111,6 +116,9 @@ and copy its `photos.json` over (`--force` in the book directory would overwrite
 | `BAD_DPI` | error | layout |
 | `GUTTER_CROSSING` | warning | layout (perfect/hardcover only) |
 | `NO_ROOM` | error | layout (margins, `gap_mm` or caption leave a photo box under 5 mm; photos not placed) |
+| `NO_OUTPUT_PROFILE` | error | render: x-4 with `output.icc` unset (a set but unresolvable profile fails the render instead) |
+| `DPI_ABOVE_NEED` | info | render: x-4 placements above 1.5 × `output.max_dpi` (default 350); x-4 embeds source bytes unchanged. Suggests a smaller `source.size` only if every placement stays ≥ 300 dpi with it |
+| `ORIENTATION_REENCODED` | warning | render: x-4 photo with an EXIF orientation tag; rotated and JPEG-encoded once (`output.jpeg_quality`) to embed it upright, so it is not the source bytes. x-1a applies the orientation during its single CMYK conversion (no issue) |
 | `NO_OUTPUT_INTENT`, `NO_DEST_PROFILE`, `NO_PDFX_VERSION`, `PDF_VERSION` | error | check |
 | `NO_TRIMBOX`, `TRIMBOX_SIZE`, `BLEED_SMALL` | error | check |
 | `NO_BLEEDBOX` | warning | check |
@@ -127,3 +135,10 @@ and copy its `photos.json` over (`--force` in the book directory would overwrite
 ## Migration notes
 
 - v1: initial. Pre-version specs need `version: 1` added and `_file` hints renamed to `note`.
+- v1, added (no version bump): issue code `NO_OUTPUT_PROFILE`.
+- v1, added (no version bump): `book.yaml` `output.max_dpi`; `report.json` `max_dpi` and `images[].source_px`;
+  issue code `DPI_ABOVE_NEED`. Existing x-1a books are now downsampled to 350 dpi by default; set
+  `output.max_dpi: null` to keep every source pixel.
+- v1, added (no version bump): issue code `ORIENTATION_REENCODED`. Clarified: a relative `output.icc` is
+  resolved against the book directory (it used to depend on the working directory); `px`/`source_px`
+  are sizes as displayed, with EXIF orientation applied.

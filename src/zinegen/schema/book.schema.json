@@ -49,7 +49,9 @@
         "standard": {"enum": ["pdf/x-1a", "pdf/x-4"]},
         "icc": {"type": ["string", "null"], "description": "CMYK press profile: a file path, or a file name searched in the usual profile directories (e.g. JapanColor2001Coated)."},
         "intent": {"enum": ["perceptual", "relative-colorimetric", "saturation", "absolute-colorimetric"]},
-        "jpeg_quality": {"type": "integer", "minimum": 50, "maximum": 100}
+        "jpeg_quality": {"type": "integer", "minimum": 50, "maximum": 100},
+        "max_dpi": {"oneOf": [{"type": "integer", "minimum": 150, "maximum": 2400}, {"type": "null"}],
+                    "description": "PDF/X-1a: downsample each photo during the single CMYK conversion so its largest placement gets this effective resolution (never upsampled). null keeps every source pixel. Default 350. PDF/X-4 always embeds the source bytes."}
       }
     },
     "source": {
