@@ -154,7 +154,7 @@ $EDITOR books/kyoto/book.yaml
 zinegen build books/kyoto          # fetch + render + proof + check
 ```
 
-`zinegen presets` lists trim presets and binding rules; the `zg_spec_help` MCP tool (or `docs/02-design.md`)
+`zinegen presets` lists trim presets and binding rules; the `zg_spec_help` MCP tool (or `docs/03-schemas.md`)
 documents every `book.yaml` key.
 
 ## Troubleshooting
@@ -164,7 +164,7 @@ documents every `book.yaml` key.
 | `zinegen doctor`: WeasyPrint cannot load pango | `brew install pango` (macOS) or the apt packages above. On macOS zinegen adds `/opt/homebrew/lib` to the library path itself. |
 | `doctor`: Lightroom: Not signed in / Token refresh failed | `lr-mcp login` again, then `lr-mcp doctor`. |
 | `doctor`: CMYK ICC profiles found: none | Download a press profile and set `output.icc: /path/to/profile.icc` in `book.yaml`. PDF/X-4 also needs one for the output intent. |
-| Tools missing in the agent | Start a new session; check `claude mcp list` or `codex mcp list`; the command must be an absolute path. |
+| Tools missing in the agent | Start a new session; check `claude mcp list` or `codex mcp list`; the command must be an absolute path. The plugin runs `zinegen mcp` by name, so `which zinegen` must succeed in the shell that starts Claude Code (`uv tool update-shell` if it does not). |
 | `zg_fetch` is slow | Full-size renditions are generated on Adobe's side on first request. The cache makes later runs instant. |
 | `zg_check` reports dpi below 300 | Use a smaller template (`margin` instead of `full-bleed`) or a higher-resolution photo. Below 200 the check fails. |
 | Spread image warning about the gutter | Perfect binding hides 6–8 mm at the spine. Set `focal` to move the subject off-centre or use `layflat`/`saddle` binding. |
