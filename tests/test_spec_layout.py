@@ -71,6 +71,53 @@ def test_layout_geometry(tmp_path):
     assert all({"page", "photo", "template", "placed_mm", "px", "dpi", "level", "crossing_gutter"} <= set(i) for i in rep["images"])
 
 
+def _intersects(r, s):
+    return r[0] < s[0] + s[2] and s[0] < r[0] + r[2] and r[1] < s[1] + s[3] and s[1] < r[1] + r[3]
+
+
+def _box(el):
+    return (el.x, el.y, el.w, el.h)
+
+
+@pytest.mark.parametrize("item", [
+    {"template": "pair", "photos": [B, B], "direction": "row"},
+    {"template": "pair", "photos": [A, A], "direction": "column"},
+    {"template": "pair", "photos": [A, B], "direction": "row"},
+    {"template": "pair", "photos": [A, B], "direction": "column", "gap_mm": 2},
+    {"template": "margin", "photo": A},
+    {"template": "margin", "photo": B, "valign": "bottom"},
+])
+@pytest.mark.parametrize("caption_pt", [7.5, 12])
+def test_caption_clear_of_photos_and_folio(tmp_path, item, caption_pt):
+    """Issue #9: the caption sits below the photo block with a gap and never touches the folio (mm geometry)."""
+    p = write(tmp_path, [{"template": "title", "title": "x"}, {**item, "caption": "c"}, {**item, "caption": "c"}],
+              page_numbers=True, type={"caption_pt": caption_pt})
+    book = spec.load(p)
+    pages = layout.layout(book, {A: (6000, 4000), B: (4000, 6000)})
+    for pl in pages[1:3]:
+        (cap,) = [t for t in pl.texts if t.kind == "caption"]
+        (folio,) = [t for t in pl.texts if t.kind == "folio"]
+        block_bottom = max(im.y + im.h for im in pl.images)
+        for im in pl.images:
+            assert not _intersects(_box(cap), _box(im))
+            assert not _intersects(_box(folio), _box(im))
+        assert cap.y - block_bottom >= layout.CAPTION_GAP_MM - 1e-9
+        assert not _intersects(_box(cap), _box(folio))
+        assert folio.y - (cap.y + cap.h) >= 3          # clearly separate blocks, not one
+        if item["template"] == "pair":
+            # directly under the photo block, left-aligned with it
+            assert abs(cap.y - block_bottom - layout.CAPTION_GAP_MM) < 1e-9
+            assert abs(cap.x - min(im.x for im in pl.images)) < 1e-9
+
+
+def test_pair_without_caption_uses_full_box(tmp_path):
+    p = write(tmp_path, [{"template": "pair", "photos": [A, A], "direction": "column", "gap_mm": 6}])
+    book = spec.load(p)
+    (pl,) = [pl for pl in layout.layout(book, {A: (4000, 6000)}) if pl.template == "pair"]
+    assert not pl.texts
+    assert abs(pl.images[1].clip[1] + pl.images[1].clip[3] - (210 - 16)) < 1e-9
+
+
 @pytest.mark.parametrize("pages, fragment", [
     ([{"template": "margin"}], "pages[0] (margin): 'photo' is a required property"),
     ([{"template": "pair", "photos": [A]}], "pages[0] (pair) photos"),
