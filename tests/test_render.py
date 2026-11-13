@@ -10,7 +10,7 @@ import pytest
 import yaml
 from PIL import Image
 
-from zinegen import check, color, render, spec
+from zinegen import check, render, spec
 from zinegen.render import _setup_dyld
 
 A = "00000000000000000000000000000001"
@@ -89,28 +89,60 @@ def test_pdfx4_embeds_source_bytes_unchanged(book_dir: Path):
     assert all(i["px"] == i["source_px"] for i in rep["images"])
 
 
-CMYK = next((n for n in ("JapanColor2001Coated", "CoatedFOGRA39", "USWebCoatedSWOP") if color.find_profile(n)), None)
-
-
-@pytest.mark.skipif(CMYK is None, reason="no CMYK press profile installed")
-def test_pdfx1a_downsampled_once(book_dir: Path):
+def test_pdfx1a_downsampled_once(book_dir: Path, cmyk_icc: Path):
     import hashlib
+    import io
 
     import pikepdf
-    _set_output(book_dir, standard="pdf/x-1a", icc=CMYK, max_dpi=200)
+    from PIL import Image
+    _set_output(book_dir, standard="pdf/x-1a", icc=str(cmyk_icc), max_dpi=200)
+    cmyk_dir = book_dir / "cache" / "cmyk"
+    cmyk_dir.mkdir()
+    stale = [cmyk_dir / f"{A}.0123456789abcdef.cmyk.jpg", cmyk_dir / f"{A}.0123456789abcdef.cmyk.json"]
+    for f in stale:
+        f.write_bytes(b"stale")
     book = spec.load(book_dir / "book.yaml")
     rep = render.render(book)
-    assert check.check(book)["ok"]
-    cmyk = {hashlib.sha1(f.read_bytes()).hexdigest() for f in (book_dir / "cache" / "cmyk").glob("*.jpg")}
+    res = check.check(book)
+    assert res["ok"], res["issues"]
+    assert res["info"]["pdfx_version"] == "PDF/X-1a:2003"
+    assert not any(f.exists() for f in stale)                         # pruned
+    assert (book_dir / "cache" / f"{A}.jpg").exists()                 # sources untouched
+    kept = sorted(cmyk_dir.glob("*.cmyk.jpg"))
+    assert len(kept) == 2 and all(f.with_suffix(".json").exists() for f in kept)
+    cmyk = {hashlib.sha1(f.read_bytes()).hexdigest() for f in kept}
     with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
-        embedded = {hashlib.sha1(x.read_raw_bytes()).hexdigest() for page in p.pages for _, x in page.images.items()}
-    assert embedded == cmyk                         # one conversion per photo, embedded as is, nothing stale
+        raws = {x.objgen: x.read_raw_bytes() for page in p.pages for _, x in page.images.items()}
+    assert {hashlib.sha1(r).hexdigest() for r in raws.values()} == cmyk  # one conversion per photo, as is
+    for r in raws.values():
+        with Image.open(io.BytesIO(r)) as im:
+            assert im.mode == "CMYK" and "icc_profile" not in im.info  # the output intent carries the profile
     assert rep["max_dpi"] == 200
     for photo in {i["photo"] for i in rep["images"]}:
         items = [i for i in rep["images"] if i["photo"] == photo]
-        # the most demanding placement lands on the target unless the source had fewer pixels
+        # the most demanding placement lands on the target unless the source was within the tolerance
         assert min(i["dpi"] for i in items) == 200 or items[0]["px"] == items[0]["source_px"]
     assert any(i["px"][0] < i["source_px"][0] for i in rep["images"])
+
+
+def test_missing_image_fails_render(book_dir: Path, monkeypatch):
+    """A cache file that disappears between conversion and write_pdf (e.g. pruned by a concurrent render)
+    is only a WeasyPrint warning; render must not return a PDF with a photo missing."""
+    real = render.prepare_images
+
+    def vanish(*a, **k):
+        files, sizes, info = real(*a, **k)
+        victim = book_dir / "gone.jpg"
+        victim.write_bytes(files[B].read_bytes())
+        files = {**files, B: victim}
+        victim.unlink()
+        return files, sizes, info
+
+    monkeypatch.setattr(render, "prepare_images", vanish)
+    book = spec.load(book_dir / "book.yaml")
+    with pytest.raises(RuntimeError, match=f"missing from the PDF \\({B}\\)"):
+        render.render(book)
+    assert not (book_dir / "out" / "interior.pdf").exists()
 
 
 def _set_output(book_dir: Path, **output):

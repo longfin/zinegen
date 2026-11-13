@@ -17,7 +17,11 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv venv && uv pip install -e ".[dev]" ruff
       - run: .venv/bin/ruff check .
+      - name: CMYK profile for the PDF/X-1a tests (Ghostscript's default_cmyk.icc, installed with ghostscript)
+        run: find /usr/share -name default_cmyk.icc
       - run: .venv/bin/python -m pytest -q
+        env:
+          ZINEGEN_REQUIRE_CMYK: "1"   # fail rather than skip the X-1a tests if no CMYK profile is found
       - name: Package builds and ships its data files
         run: |
           uv build

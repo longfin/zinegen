@@ -101,20 +101,71 @@ def test_cmyk_key_covers_everything_that_changes_output(tmp_path):
     assert k1 != color.cmyk_key(big, SRGB, "perceptual", 95, None)
 
 
-CMYK = next((p for p in (color.find_profile(n) for n in ("JapanColor2001Coated", "CoatedFOGRA39", "USWebCoatedSWOP"))
-             if p), None)
-
-
-@pytest.mark.skipif(CMYK is None, reason="no CMYK press profile installed")
-def test_to_cmyk_resizes_once_and_caches(tmp_path):
+def test_to_cmyk_resizes_once_and_caches(tmp_path, cmyk_icc):
     src = tmp_path / "a.jpg"
     Image.linear_gradient("L").resize((800, 600)).convert("RGB").save(src, quality=90, icc_profile=SRGB.read_bytes())
     d = tmp_path / "cmyk"
-    out = color.to_cmyk(src, CMYK, d, size=(400, 300))
+    out = color.to_cmyk(src, cmyk_icc, d, size=(400, 300))
     with Image.open(out) as im:
         assert im.mode == "CMYK" and im.size == (400, 300)
+        assert "icc_profile" not in im.info          # DeviceCMYK in the PDF; the output intent has the profile
     mtime = out.stat().st_mtime_ns
-    assert color.to_cmyk(src, CMYK, d, size=(400, 300)) == out and out.stat().st_mtime_ns == mtime
-    assert color.to_cmyk(src, CMYK, d, size=(2000, 1500)) == color.to_cmyk(src, CMYK, d)   # clamped, no upsample
-    with Image.open(color.to_cmyk(src, CMYK, d, size=(2000, 1500))) as im:
+    assert color.to_cmyk(src, cmyk_icc, d, size=(400, 300)) == out and out.stat().st_mtime_ns == mtime
+    full = color.to_cmyk(src, cmyk_icc, d)
+    assert color.to_cmyk(src, cmyk_icc, d, size=(2000, 1500)) == full   # clamped, no upsample
+    with Image.open(full) as im:
         assert im.size == (800, 600)
+
+
+def test_prune_keeps_only_used_conversions(tmp_path):
+    cmyk = tmp_path / "cache" / "cmyk"
+    cmyk.mkdir(parents=True)
+    used = cmyk / f"{A}.aaaaaaaaaaaaaaaa.cmyk.jpg"
+    stale = cmyk / f"{A}.bbbbbbbbbbbbbbbb.cmyk.jpg"
+    other = cmyk / f"{B}.cccccccccccccccc.cmyk.jpg"
+    for f in (used, stale, other):
+        f.write_bytes(b"x")
+        f.with_suffix(".json").write_text("{}")
+    unrelated = cmyk / "notes.txt"
+    unrelated.write_text("keep")
+    source = tmp_path / "cache" / f"{A}.jpg"
+    source.write_bytes(b"src")
+    render._prune_cmyk(cmyk, {used})
+    assert used.exists() and used.with_suffix(".json").exists()
+    assert not stale.exists() and not stale.with_suffix(".json").exists()
+    assert not other.exists() and not other.with_suffix(".json").exists()
+    assert unrelated.exists() and source.exists()
+
+
+def test_slightly_above_target_is_not_resampled(tmp_path):
+    book = make_book(tmp_path, [{"template": "full-bleed", "photo": A}])
+    # 324 mm cover placement: 4465 px is 350 dpi; within RESAMPLE_TOLERANCE above that, keep the source
+    keep = int(4465 * render.RESAMPLE_TOLERANCE) - 5
+    sizes = {A: (keep, keep * 2 // 3)}
+    assert render.target_sizes(layout.layout(book, sizes), sizes, 350)[A] == sizes[A]
+    over = int(4465 * render.RESAMPLE_TOLERANCE) + 50
+    sizes = {A: (over, over * 2 // 3)}
+    t = render.target_sizes(layout.layout(book, sizes), sizes, 350)
+    assert t[A][0] < over and round(min(placed_dpi(book, sizes, t)[A])) == 350
+
+
+def _x4_hint(tmp_path, pages, sizes, **source):
+    doc_book = make_book(tmp_path, pages, standard="pdf/x-4")
+    doc_book.source.update(source)
+    issues = render._dpi_above_need(doc_book, layout.layout(doc_book, sizes))
+    return issues[0].message if issues else None
+
+
+def test_dpi_above_need_suggests_size_only_when_it_stays_printable(tmp_path):
+    # margin placement on A5 (~120 mm wide): 6000 px is ~1270 dpi, 2048 px would still be ~430 dpi
+    msg = _x4_hint(tmp_path, [{"template": "margin", "photo": A}], {A: (6000, 4000)})
+    assert "1 of 1 placements" in msg and "source.size: 1280" not in msg and "source.size: 2048" in msg
+    # a full-bleed cover (324 mm) at 6000 px is ~470 dpi, and 2560 px would drop it to ~200: no advice
+    msg = _x4_hint(tmp_path, [{"template": "full-bleed", "photo": A}, {"template": "margin", "photo": B}],
+                   {A: (6000, 4000), B: (9000, 6000)})
+    assert msg and "source.size" not in msg
+    # spread photos count once, not once per page
+    msg = _x4_hint(tmp_path, [{"template": "blank"}, {"template": "spread-margin", "photo": A}], {A: (20000, 8000)})
+    assert "1 of 1 placements" in msg
+    # already at a small size: nothing smaller is suggested unless it fits
+    assert _x4_hint(tmp_path, [{"template": "margin", "photo": A}], {A: (2048, 1365)}, size="2048") is None
