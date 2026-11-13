@@ -190,7 +190,9 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
                 else:
                     time.sleep(2 * (attempt + 1))
                 continue
-            path.write_bytes(data)
+            tmp = path.with_suffix(".jpg.part")  # never leave a truncated JPEG under the final name
+            tmp.write_bytes(data)
+            tmp.replace(path)
             with lock:
                 index[p.id] = {"size": size, "changed_at": p.changed_at, "bytes": len(data),
                                "file": p.file, "fetched_at": int(time.time())}

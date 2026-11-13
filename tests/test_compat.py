@@ -77,3 +77,27 @@ def test_fetch_renditions_index_survives_interruption(tmp_path, monkeypatch):
         compat.fetch_renditions(photos, tmp_path, size="640", workers=1)
     index = json.loads((tmp_path / "index.json").read_text())
     assert set(index) == {photos[0].id}               # first download is recorded, not refetched next run
+
+
+def test_fetch_renditions_never_leaves_truncated_jpeg(tmp_path, monkeypatch):
+    photo = _Photo(0)
+    final = tmp_path / f"{photo.id}.jpg"
+    final.write_bytes(b"old complete jpeg")
+    monkeypatch.setattr(compat.lr, "rendition", lambda asset_id, size: b"new jpeg")
+    real_write = compat.Path.write_bytes
+
+    def dying_write(self, data):  # process killed halfway through writing the image
+        if self.suffix == ".part":
+            real_write(self, data[:3])
+            raise KeyboardInterrupt
+        return real_write(self, data)
+
+    monkeypatch.setattr(compat.Path, "write_bytes", dying_write)
+    with pytest.raises(KeyboardInterrupt):
+        compat.fetch_renditions([photo], tmp_path, size="640", force=True, workers=1)
+    assert final.read_bytes() == b"old complete jpeg"
+
+    monkeypatch.setattr(compat.Path, "write_bytes", real_write)
+    compat.fetch_renditions([photo], tmp_path, size="640", force=True, workers=1)
+    assert final.read_bytes() == b"new jpeg"
+    assert not list(tmp_path.glob("*.part"))
