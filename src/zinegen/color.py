@@ -57,7 +57,7 @@ def image_info(path: Path) -> dict:
         return {"width": im.width, "height": im.height, "mode": im.mode, "icc": desc}
 
 
-CMYK_ALGO = "v2:lanczos:bpc"   # bump when the conversion itself changes, so old cache entries are not reused
+CMYK_ALGO = "v3:lanczos:bpc:noicc"   # bump when the conversion itself changes, so old cache entries are not reused
 
 
 def cmyk_key(src: Path, profile: Path, intent: str, quality: int, size: tuple[int, int] | None) -> str:
@@ -106,7 +106,9 @@ def to_cmyk(src: Path, profile: Path, dest_dir: Path, intent: str = "perceptual"
                                      flags=ImageCms.Flags.BLACKPOINTCOMPENSATION)
         cmyk = ImageCms.applyTransform(im, tr)
         tmp = out.with_name(out.name + ".part")
-        cmyk.save(tmp, format="JPEG", quality=quality, subsampling=0, icc_profile=prof.tobytes(), dpi=(300, 300))
+        # no embedded ICC: the image is DeviceCMYK in the PDF and the output intent already carries the
+        # profile; embedding it would add the whole profile (often ~0.5-2 MB) to every image
+        cmyk.save(tmp, format="JPEG", quality=quality, subsampling=0, dpi=(300, 300))
         tmp.replace(out)
     meta = {"source": str(src), "source_px": list(src_size), "px": list(size or src_size),
             "profile": profile_description(profile), "intent": intent, "quality": quality, "algo": CMYK_ALGO}
