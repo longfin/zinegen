@@ -196,6 +196,24 @@ def test_init_relative_icc_resolves_against_book_dir(lightroom, tmp_path, monkey
     assert render.resolve_icc(b) == (book / "rel" / "my.icc").resolve()
 
 
+def test_render_unreadable_icc_is_tool_error(tmp_path):
+    write_book(tmp_path, output={"standard": "pdf/x-4", "icc": "bad.icc"})
+    (tmp_path / "bad.icc").write_bytes(b"not an icc profile")
+    from zinegen.render import _setup_dyld
+    _setup_dyld()
+    pytest.importorskip("weasyprint")
+    res = call("zg_render", {"book": str(tmp_path)})
+    assert res.is_error and "not a readable ICC profile" in text(res)
+
+
+def test_init_unreadable_icc_is_error(lightroom, tmp_path):
+    book = tmp_path / "b"
+    book.mkdir()
+    (book / "bad.icc").write_bytes(b"not an icc profile")
+    res = call("zg_init_book", {"album_id": ALBUM, "dir": str(book), "standard": "pdf/x-4", "icc": "bad.icc"})
+    assert res.is_error and "not a readable ICC profile" in text(res)
+
+
 def test_init_unknown_icc_is_error(lightroom, tmp_path):
     res = call("zg_init_book", {"album_id": ALBUM, "dir": str(tmp_path / "b"), "icc": "NoSuchProfile"})
     assert res.is_error and "NoSuchProfile" in text(res) and "not found" in text(res)

@@ -77,6 +77,7 @@ def resolve_icc(book: Book) -> Path | None:
             raise ValueError(f"output.icc {name!r} not found: it is not an existing file (relative paths are "
                              f"resolved against the book directory {book.root}), and no {name}, {name}.icc or "
                              f"{name}.icm exists in {where}. Use a path, or a name that `zinegen doctor` lists.")
+        color.check_profile(icc, f"output.icc {name!r} resolves to")
     else:
         icc = None
     if std == "pdf/x-1a":

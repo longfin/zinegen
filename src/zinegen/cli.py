@@ -109,6 +109,7 @@ def init_book(album: str, dir: str | None = None, standard: str = "pdf/x-1a", ic
             raise ValueError(f"ICC profile {icc!r} not found (a file path, relative paths resolved against the book "
                              f"directory {root}, or a name searched in "
                              f"{', '.join(str(d) for d in color.ADOBE_PROFILE_DIRS)})")
+        color.check_profile(prof, f"ICC profile {icc!r} resolves to")
         if standard == "pdf/x-1a" and color.profile_components(prof) != ["c", "m", "y", "k"]:
             raise ValueError(f"pdf/x-1a needs a CMYK output profile; {prof.name} is not CMYK")
     out = root / "book.yaml"

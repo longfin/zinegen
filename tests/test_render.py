@@ -266,3 +266,22 @@ def test_proof_spreads(book_dir: Path):
     assert len(out) == 5          # 8 pages: [1], [2,3], [4,5], [6,7], [8]
     assert out[0].name == "spread-01.png"
 
+
+def test_icc_name_is_not_shadowed_by_a_book_file(book_dir: Path):
+    """`icc: X` without a separator or extension is a profile name: a file `X` next to book.yaml is ignored."""
+    (book_dir / "NoSuchProfileName").write_bytes(b"not an icc profile")
+    _set_output(book_dir, icc="NoSuchProfileName")
+    with pytest.raises(ValueError, match="not found"):
+        render.resolve_icc(spec.load(book_dir / "book.yaml"))
+
+
+def test_unreadable_icc_is_a_clear_error(book_dir: Path, capsys):
+    (book_dir / "bad.icc").write_bytes(b"not an icc profile")
+    _set_output(book_dir, icc="bad.icc")
+    with pytest.raises(ValueError, match="not a readable ICC profile"):
+        render.render(spec.load(book_dir / "book.yaml"))
+    from zinegen import cli
+    assert cli.main(["render", str(book_dir / "book.yaml")]) == 2
+    err = capsys.readouterr().err
+    assert "error: output.icc 'bad.icc' resolves to" in err and "not a readable ICC profile" in err
+    assert "Traceback" not in err

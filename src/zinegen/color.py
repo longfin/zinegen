@@ -29,22 +29,39 @@ INTENTS = {
 def find_profile(name_or_path: str | None, base: Path | None = None) -> Path | None:
     """Resolve an ICC profile by path or by file name searched in the usual directories.
 
-    A relative path is resolved against `base` (the book directory, where book.yaml lives) when given, never
-    against the process's working directory: `output.icc: profiles/press.icc` means the same file whoever
-    renders the book. Without `base` (doctor, tests) it is relative to the working directory, as before.
+    A value is a path when it looks like one (absolute, `~`, a directory separator, or an .icc/.icm extension);
+    anything else is a profile name, searched only in the profile directories, so a stray file in the book
+    directory named like a profile cannot shadow the installed one. A relative path is resolved against
+    `base` (the book directory, where book.yaml lives) when given, never against the process's working
+    directory: `output.icc: profiles/press.icc` means the same file whoever renders the book. Without `base`
+    (doctor, tests) it is relative to the working directory, as before.
     """
     if not name_or_path:
         return None
     p = Path(name_or_path).expanduser()
-    if base is not None and not p.is_absolute():
-        p = Path(base) / p
-    if p.is_file():
-        return p.resolve()
+    if base is None or looks_like_path(name_or_path):
+        if base is not None and not p.is_absolute():
+            p = Path(base) / p
+        if p.is_file():
+            return p.resolve()
     for d in ADOBE_PROFILE_DIRS:
         for cand in (d / name_or_path, d / f"{name_or_path}.icc", d / f"{name_or_path}.icm"):
             if cand.exists():
                 return cand
     return None
+
+
+def looks_like_path(value: str) -> bool:
+    return ("/" in value or "\\" in value or value.startswith("~")
+            or Path(value).suffix.lower() in (".icc", ".icm"))
+
+
+def check_profile(path: Path, label: str = "ICC profile") -> None:
+    """Raise ValueError (not a bare OSError) when `path` is not a readable ICC profile."""
+    try:
+        ImageCms.ImageCmsProfile(str(path))
+    except (OSError, ImageCms.PyCMSError) as e:
+        raise ValueError(f"{label} {path} is not a readable ICC profile ({e})") from None
 
 
 def profile_description(path: Path) -> str:
