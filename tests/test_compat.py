@@ -1,5 +1,6 @@
 """lr/compat.py helpers, without the network (lr_mcp.client is stubbed where needed)."""
 import json
+import threading
 
 import pytest
 
@@ -84,20 +85,59 @@ def test_fetch_renditions_never_leaves_truncated_jpeg(tmp_path, monkeypatch):
     final = tmp_path / f"{photo.id}.jpg"
     final.write_bytes(b"old complete jpeg")
     monkeypatch.setattr(compat.lr, "rendition", lambda asset_id, size: b"new jpeg")
-    real_write = compat.Path.write_bytes
+    real_replace = compat.Path.replace
 
-    def dying_write(self, data):  # process killed halfway through writing the image
-        if self.suffix == ".part":
-            real_write(self, data[:3])
+    def dying_replace(self, target):  # process killed after the temp file is written, before the rename
+        if str(target).endswith(".jpg"):
             raise KeyboardInterrupt
-        return real_write(self, data)
+        return real_replace(self, target)
 
-    monkeypatch.setattr(compat.Path, "write_bytes", dying_write)
+    monkeypatch.setattr(compat.Path, "replace", dying_replace)
     with pytest.raises(KeyboardInterrupt):
         compat.fetch_renditions([photo], tmp_path, size="640", force=True, workers=1)
     assert final.read_bytes() == b"old complete jpeg"
+    assert not list(tmp_path.glob("*.part")) and not list(tmp_path.glob(".*.part"))   # temp cleaned up
 
-    monkeypatch.setattr(compat.Path, "write_bytes", real_write)
+    monkeypatch.setattr(compat.Path, "replace", real_replace)
     compat.fetch_renditions([photo], tmp_path, size="640", force=True, workers=1)
     assert final.read_bytes() == b"new jpeg"
-    assert not list(tmp_path.glob("*.part"))
+
+
+def test_fetch_renditions_duplicate_ids_download_once(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(compat.lr, "rendition", lambda asset_id, size: calls.append(asset_id) or b"jpeg")
+    photo = _Photo(0)
+    res = compat.fetch_renditions([photo, photo], tmp_path, size="640", workers=2)
+    assert res == {"downloaded": 1, "skipped": 0, "errors": {}}
+    assert calls == [photo.id]
+
+
+def test_fetch_renditions_concurrent_writers_of_one_photo(tmp_path, monkeypatch):
+    """Two runs fetching the same book at once (CLI + MCP): both reach the rename together."""
+    monkeypatch.setattr(compat.lr, "rendition", lambda asset_id, size: b"jpeg")
+    real_replace = compat.Path.replace
+    both_written = threading.Barrier(2, timeout=5)
+
+    def replace(self, target):
+        if str(target).endswith(".jpg"):
+            both_written.wait()  # both writers have their temp file before either renames
+        return real_replace(self, target)
+
+    monkeypatch.setattr(compat.Path, "replace", replace)
+    results, failures = [], []
+
+    def run():
+        try:
+            results.append(compat.fetch_renditions([_Photo(0)], tmp_path, size="640", force=True, workers=1))
+        except Exception as e:  # noqa: BLE001 - surface any worker failure in the assertion below
+            failures.append(e)
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert failures == []
+    assert [r["errors"] for r in results] == [{}, {}]
+    assert (tmp_path / f"{_Photo(0).id}.jpg").read_bytes() == b"jpeg"
+    assert not list(tmp_path.glob(".*.part"))

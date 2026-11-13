@@ -6,6 +6,8 @@ Everything here is read-only against the Partner API.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -161,7 +163,8 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
     index_file = dest / "index.json"
     index = json.loads(index_file.read_text()) if index_file.exists() else {}
     jobs = []
-    for p in photos:
+    unique = list({p.id: p for p in photos}.values())  # one download (and one writer) per asset id
+    for p in unique:
         path = dest / f"{p.id}.jpg"
         entry = index.get(p.id)
         if (not force and entry and path.exists() and entry.get("size") == size
@@ -173,9 +176,7 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
 
     def save_index():
         # Called under `lock` after every download, so an interrupted run keeps what it already fetched.
-        tmp = index_file.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(index, indent=2))
-        tmp.replace(index_file)
+        _atomic_write(index_file, json.dumps(index, indent=2).encode())
 
     def fetch(job):
         p, path = job
@@ -190,9 +191,7 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
                 else:
                     time.sleep(2 * (attempt + 1))
                 continue
-            tmp = path.with_suffix(".jpg.part")  # never leave a truncated JPEG under the final name
-            tmp.write_bytes(data)
-            tmp.replace(path)
+            _atomic_write(path, data)  # never leave a truncated JPEG under the final name
             with lock:
                 index[p.id] = {"size": size, "changed_at": p.changed_at, "bytes": len(data),
                                "file": p.file, "fetched_at": int(time.time())}
@@ -205,4 +204,21 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
         list(ex.map(fetch, jobs))
     with lock:
         save_index()
-    return {"downloaded": len(jobs) - len(errors), "skipped": len(photos) - len(jobs), "errors": errors}
+    return {"downloaded": len(jobs) - len(errors), "skipped": len(unique) - len(jobs), "errors": errors}
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write via a temp file unique to this writer, then rename over `path`.
+
+    Concurrent writers of the same path (two threads, or the CLI and the MCP server fetching one book)
+    each get their own temp name, so the last rename wins and none fails. The temp file is removed if
+    the write or the rename fails.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".part")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        Path(tmp).replace(path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
