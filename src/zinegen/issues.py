@@ -15,6 +15,7 @@ CODES = {
     # render
     "NO_OUTPUT_PROFILE": "error",
     "DPI_ABOVE_NEED": "info",
+    "ORIENTATION_REENCODED": "warning",
     # pdf check
     "NO_OUTPUT_INTENT": "error",
     "NO_DEST_PROFILE": "error",

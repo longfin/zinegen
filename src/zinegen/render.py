@@ -24,6 +24,10 @@ SOURCE_SIZES = (2560, 2048, 1280, 640)
 PRINT_DPI = 300             # LOW_DPI threshold in layout.report
 
 
+class RenderError(RuntimeError):
+    """The render produced a PDF that cannot be trusted (it has been removed)."""
+
+
 def _setup_dyld():
     """WeasyPrint needs pango/cairo; on macOS with Homebrew the dylibs are not on the default path."""
     if os.uname().sysname == "Darwin" and "DYLD_FALLBACK_LIBRARY_PATH" not in os.environ:
@@ -67,11 +71,12 @@ def resolve_icc(book: Book) -> Path | None:
     name = book.output.get("icc")
     std = book.output["standard"]
     if name:
-        icc = color.find_profile(name)
+        icc = color.find_profile(name, base=book.root)
         if icc is None:
             where = ", ".join(str(d) for d in color.ADOBE_PROFILE_DIRS)
-            raise ValueError(f"output.icc {name!r} not found: it is not an existing file, and no {name}, {name}.icc "
-                             f"or {name}.icm exists in {where}. Use a full path, or a name that `zinegen doctor` lists.")
+            raise ValueError(f"output.icc {name!r} not found: it is not an existing file (relative paths are "
+                             f"resolved against the book directory {book.root}), and no {name}, {name}.icc or "
+                             f"{name}.icm exists in {where}. Use a path, or a name that `zinegen doctor` lists.")
     else:
         icc = None
     if std == "pdf/x-1a":
@@ -111,36 +116,57 @@ def target_sizes(pages: list[_layout.PageLayout], sizes: dict[str, tuple[int, in
     return out
 
 
-def prepare_images(book: Book, pages: list[_layout.PageLayout], srcs: dict[str, Path],
-                   src_sizes: dict[str, tuple[int, int]], icc: Path | None,
-                   log=None) -> tuple[dict[str, Path], dict[str, tuple[int, int]], dict]:
-    """Return (photo id -> file to embed, photo id -> pixel size of that file, colour info).
+def placed(pages: list[_layout.PageLayout]) -> list[str]:
+    """Photo ids that have at least one placement (a NO_ROOM page places nothing), in order."""
+    return list(dict.fromkeys(im.photo for pl in pages for im in pl.images))
 
-    PDF/X-1a: one conversion per photo from the source pixels (resampled to `target_sizes`, then P3 -> CMYK,
-    then one JPEG encode). PDF/X-4: the source files, byte for byte.
+
+def prepare_images(book: Book, pages: list[_layout.PageLayout], srcs: dict[str, Path],
+                   src_info: dict[str, dict], icc: Path | None,
+                   log=None) -> tuple[dict[str, Path], dict[str, tuple[int, int]], dict, list[Issue]]:
+    """Return (photo id -> file to embed, photo id -> pixel size of that file, colour info, issues), for the
+    photos that are placed; unplaced photos are neither converted nor embedded.
+
+    PDF/X-1a: one conversion per photo from the source pixels (EXIF orientation applied, resampled to
+    `target_sizes`, then P3 -> CMYK, then one JPEG encode). PDF/X-4: the source files, byte for byte, except a
+    photo with an EXIF orientation, which is rotated and encoded once here (ORIENTATION_REENCODED) instead of
+    being rotated and re-encoded by WeasyPrint at Pillow's default quality.
     """
     std = book.output["standard"]
     info = {"standard": std}
+    issues: list[Issue] = []
+    ids = placed(pages)
+    src_sizes = {pid: (src_info[pid]["width"], src_info[pid]["height"]) for pid in ids}
+    quality = int(book.output.get("jpeg_quality", 95))
     if std == "pdf/x-1a":
         targets = target_sizes(pages, src_sizes, max_dpi(book))
         cmyk_dir = book.cache_dir.resolve() / "cmyk"
-        files = {pid: color.to_cmyk(f, icc, cmyk_dir, book.output.get("intent", "perceptual"),
-                                    int(book.output.get("jpeg_quality", 95)), log, size=targets[pid])
-                 for pid, f in srcs.items()}
-        _prune_cmyk(cmyk_dir, set(files.values()))
+        files = {pid: color.to_cmyk(srcs[pid], icc, cmyk_dir, book.output.get("intent", "perceptual"),
+                                    quality, log, size=targets[pid]) for pid in ids}
+        _prune(cmyk_dir, set(files.values()), "cmyk")
         sizes = {pid: tuple(color.image_info(f)[k] for k in ("width", "height")) for pid, f in files.items()}
     else:
-        files, sizes = dict(srcs), dict(src_sizes)
+        files, sizes = {pid: srcs[pid] for pid in ids}, dict(src_sizes)
+        upright_dir = book.cache_dir.resolve() / "upright"
+        for pid in ids:
+            o = src_info[pid]["orientation"]
+            if o != 1:
+                files[pid] = color.upright(srcs[pid], upright_dir, quality, log)
+                issues.append(Issue("ORIENTATION_REENCODED", f"EXIF orientation {o}: rotated and JPEG-encoded once "
+                                    f"(quality {quality}) to embed it upright, so this photo is not the source bytes. "
+                                    "Export it upright from Lightroom to avoid the extra generation.", photo=pid))
+        if upright_dir.exists():
+            _prune(upright_dir, set(files.values()), "upright")
     info["icc"] = str(icc) if icc else None
     info["icc_description"] = color.profile_description(icc) if icc else None
     info["icc_components"] = color.profile_components(icc) if icc else None
-    return files, sizes, info
+    return files, sizes, info, issues
 
 
-def _prune_cmyk(cmyk_dir: Path, keep: set[Path]):
-    """Drop CMYK conversions this render does not use (earlier layouts, sizes or profiles), so the derived
-    cache does not grow with every iteration. The next render that needs one simply converts again."""
-    for f in cmyk_dir.glob("*.cmyk.*"):
+def _prune(directory: Path, keep: set[Path], kind: str):
+    """Drop derived images (`*.<kind>.jpg` and sidecars) this render does not use (earlier layouts, sizes or
+    profiles, unplaced photos), so the cache does not grow with every iteration."""
+    for f in directory.glob(f"*.{kind}.*"):
         if f.with_suffix(".jpg") not in keep:
             f.unlink(missing_ok=True)
 
@@ -151,10 +177,11 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
 
     icc = resolve_icc(book)
     srcs = source_files(book)
-    src_sizes = {pid: tuple(color.image_info(f)[k] for k in ("width", "height")) for pid, f in srcs.items()}
+    src_info = {pid: color.image_info(f) for pid, f in srcs.items()}
+    src_sizes = {pid: (i["width"], i["height"]) for pid, i in src_info.items()}   # as displayed (EXIF applied)
     # Geometry comes from the source pixels, so downsampling can never move anything on the page.
     pages = _layout.layout(book, src_sizes)
-    files, sizes, cinfo = prepare_images(book, pages, srcs, src_sizes, icc, log)
+    files, sizes, cinfo, img_issues = prepare_images(book, pages, srcs, src_info, icc, log)
     for pl in pages:                       # report the resolution of what is actually embedded
         for im in pl.images:
             im.px = sizes[im.photo]
@@ -163,7 +190,7 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     rep["max_dpi"] = max_dpi(book) if book.output["standard"] == "pdf/x-1a" else None
     for item in rep["images"]:
         item["source_px"] = list(src_sizes[item["photo"]])
-    rep["issues"] += [i.to_dict() for i in _render_issues(book, pages, icc)]
+    rep["issues"] += [i.to_dict() for i in img_issues + _render_issues(book, pages, icc)]
     env = jinja2.Environment(loader=jinja2.PackageLoader("zinegen", "templates"), autoescape=True)
     tpl = env.get_template("book.html.j2")
     icc_uri = Path(cinfo["icc"]).resolve().as_uri() if cinfo["icc"] else None
@@ -234,9 +261,9 @@ def _dpi_above_need(book: Book, pages: list[_layout.PageLayout]) -> list[Issue]:
 
 
 def _verify_images(pdf_path: Path, expected: dict[str, Path]):
-    """Fail when a placed photo is not in the PDF. WeasyPrint only logs a warning for an image it cannot
-    load (e.g. a cache file removed by a concurrent render), which would silently drop a photo. Images are
-    passed through byte for byte, so each expected file must appear as an image stream."""
+    """Fail when a placed photo is not in the PDF as prepared. WeasyPrint only logs a warning for an image it
+    cannot load (e.g. a cache file removed by a concurrent render), which would silently drop a photo. Every
+    prepared file is upright and passed through byte for byte, so each must appear as an image stream."""
     import hashlib
 
     import pikepdf
@@ -254,9 +281,10 @@ def _verify_images(pdf_path: Path, expected: dict[str, Path]):
             missing.append(pid)
     if missing:
         pdf_path.unlink(missing_ok=True)
-        raise RuntimeError(f"{len(missing)} placed photo(s) missing from the PDF ({', '.join(sorted(missing))}); "
-                           "the image file vanished or changed during the render (another render of this book "
-                           "running?). Render again.")
+        raise RenderError(f"{len(missing)} placed photo(s) not embedded as prepared ({', '.join(sorted(missing))}): "
+                          "the PDF has no image stream identical to the file prepared for them, so it was removed. "
+                          "WeasyPrint logs why it skipped or altered an image; a cache file removed or rewritten "
+                          "during the render (e.g. by another render of this book) is one possible cause.")
 
 
 def postprocess(pdf_path: Path, book: Book):

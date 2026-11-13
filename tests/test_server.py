@@ -149,7 +149,7 @@ def test_lightroom_error_hides_api_path(lightroom, monkeypatch):
 
 def test_init_writes_nothing_to_stdout(lightroom, tmp_path, capfd, monkeypatch):
     from zinegen import color
-    monkeypatch.setattr(color, "find_profile", lambda name: None)
+    monkeypatch.setattr(color, "find_profile", lambda name, base=None: None)
     monkeypatch.chdir(tmp_path)
     res = call("zg_init_book", {"album_id": ALBUM, "standard": "pdf/x-4"})
     out = capfd.readouterr().out
@@ -167,9 +167,33 @@ def test_init_writes_nothing_to_stdout(lightroom, tmp_path, capfd, monkeypatch):
 
 def test_init_x1a_without_profile_warns(lightroom, tmp_path, monkeypatch):
     from zinegen import color
-    monkeypatch.setattr(color, "find_profile", lambda name: None)
+    monkeypatch.setattr(color, "find_profile", lambda name, base=None: None)
     res = call("zg_init_book", {"album_id": ALBUM, "dir": str(tmp_path / "b")})
     assert not res.is_error and "warning: no CMYK press profile" in text(res)
+
+
+def test_init_relative_icc_resolves_against_book_dir(lightroom, tmp_path, monkeypatch):
+    """A relative icc means the same file at init and at render: relative to the book directory, not to the
+    server's working directory."""
+    import shutil as sh
+    from importlib.resources import files as res
+    srgb = str(res("zinegen") / "templates" / "sRGB2014.icc")
+    cwd = tmp_path / "server-cwd"
+    (cwd / "rel").mkdir(parents=True)
+    sh.copy(srgb, cwd / "rel" / "my.icc")
+    monkeypatch.chdir(cwd)
+    book = tmp_path / "b"
+    res_ = call("zg_init_book", {"album_id": ALBUM, "dir": str(book), "standard": "pdf/x-4", "icc": "rel/my.icc"})
+    assert res_.is_error and "book directory" in text(res_)    # only exists relative to the server cwd
+    (book / "rel").mkdir(parents=True)
+    sh.copy(srgb, book / "rel" / "my.icc")
+    res_ = call("zg_init_book", {"album_id": ALBUM, "dir": str(book), "standard": "pdf/x-4", "icc": "rel/my.icc"})
+    assert not res_.is_error
+    b = spec.load(book / "book.yaml")
+    assert b.output["icc"] == "rel/my.icc"
+    from zinegen import render
+    monkeypatch.chdir(tmp_path)
+    assert render.resolve_icc(b) == (book / "rel" / "my.icc").resolve()
 
 
 def test_init_unknown_icc_is_error(lightroom, tmp_path):
@@ -319,7 +343,7 @@ def test_mcp_spine_rejects_negative_board():
 
 def test_cli_init_exists(lightroom, tmp_path, capsys, monkeypatch):
     from zinegen import color
-    monkeypatch.setattr(color, "find_profile", lambda name: None)
+    monkeypatch.setattr(color, "find_profile", lambda name, base=None: None)
     d = str(tmp_path / "b")
     assert cli.main(["init", "--album", ALBUM, "--dir", d, "--standard", "pdf/x-4"]) == 0
     assert capsys.readouterr().out.strip() == str(tmp_path / "b" / "book.yaml")

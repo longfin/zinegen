@@ -125,24 +125,86 @@ def test_pdfx1a_downsampled_once(book_dir: Path, cmyk_icc: Path):
     assert any(i["px"][0] < i["source_px"][0] for i in rep["images"])
 
 
-def test_missing_image_fails_render(book_dir: Path, monkeypatch):
+def test_missing_image_fails_render(book_dir: Path, monkeypatch, capsys):
     """A cache file that disappears between conversion and write_pdf (e.g. pruned by a concurrent render)
     is only a WeasyPrint warning; render must not return a PDF with a photo missing."""
     real = render.prepare_images
 
     def vanish(*a, **k):
-        files, sizes, info = real(*a, **k)
+        files, sizes, info, issues = real(*a, **k)
         victim = book_dir / "gone.jpg"
         victim.write_bytes(files[B].read_bytes())
         files = {**files, B: victim}
         victim.unlink()
-        return files, sizes, info
+        return files, sizes, info, issues
 
     monkeypatch.setattr(render, "prepare_images", vanish)
     book = spec.load(book_dir / "book.yaml")
-    with pytest.raises(RuntimeError, match=f"missing from the PDF \\({B}\\)"):
+    with pytest.raises(render.RenderError, match=f"not embedded as prepared \\({B}\\)"):
         render.render(book)
     assert not (book_dir / "out" / "interior.pdf").exists()
+
+    # the CLI reports it like any other render failure: one error line, exit status, no traceback
+    from zinegen import cli
+    assert cli.main(["render", str(book_dir / "book.yaml")]) == 2
+    err = capsys.readouterr().err
+    assert "error: 1 placed photo(s) not embedded as prepared" in err and "Traceback" not in err
+
+
+def _exif_rotated_jpeg(path: Path, w: int, h: int, orientation: int):
+    from importlib.resources import files as res
+    im = Image.linear_gradient("L").resize((w, h)).convert("RGB")
+    exif = Image.Exif()
+    exif[0x0112] = orientation
+    im.save(path, quality=90, exif=exif, icc_profile=(res("zinegen") / "templates" / "sRGB2014.icc").read_bytes())
+
+
+def test_exif_orientation_pdfx4(book_dir: Path):
+    """A JPEG with EXIF orientation 6 (stored 2400x1600, displayed 1600x2400) renders on X-4: laid out as
+    displayed, embedded upright from one re-encode we control, reported, and verified."""
+    import hashlib
+
+    import pikepdf
+    _exif_rotated_jpeg(book_dir / "cache" / f"{B}.jpg", 2400, 1600, 6)
+    book = spec.load(book_dir / "book.yaml")
+    rep = render.render(book)
+    assert all(i["source_px"] == [1600, 2400] for i in rep["images"] if i["photo"] == B)
+    orient = [i for i in rep["issues"] if i["code"] == "ORIENTATION_REENCODED"]
+    assert [(i["photo"], i["level"]) for i in orient] == [(B, "warning")]
+    upright = list((book_dir / "cache" / "upright").glob("*.upright.jpg"))
+    assert len(upright) == 1
+    with Image.open(upright[0]) as im:
+        assert im.size == (1600, 2400) and im.getexif().get(0x0112) is None and im.info.get("icc_profile")
+    with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
+        streams = {hashlib.sha1(x.read_raw_bytes()).hexdigest(): (int(x.Width), int(x.Height))
+                   for page in p.pages for _, x in page.images.items()}
+    assert streams[hashlib.sha1(upright[0].read_bytes()).hexdigest()] == (1600, 2400)
+    assert hashlib.sha1((book_dir / "cache" / f"{A}.jpg").read_bytes()).hexdigest() in streams   # A untouched
+    assert check.check(book)["ok"]
+
+
+def test_exif_orientation_pdfx1a(book_dir: Path, cmyk_icc: Path):
+    _set_output(book_dir, standard="pdf/x-1a", icc=str(cmyk_icc))
+    _exif_rotated_jpeg(book_dir / "cache" / f"{B}.jpg", 2400, 1600, 6)
+    book = spec.load(book_dir / "book.yaml")
+    rep = render.render(book)
+    assert not any(i["code"] == "ORIENTATION_REENCODED" for i in rep["issues"])   # one conversion anyway
+    b = [i for i in rep["images"] if i["photo"] == B]
+    assert b and all(i["source_px"] == [1600, 2400] and i["px"][0] < i["px"][1] for i in b)
+    assert check.check(book)["ok"]
+
+
+def test_relative_icc_resolves_against_book_dir(book_dir: Path, tmp_path_factory, monkeypatch):
+    import shutil as sh
+    from importlib.resources import files as res
+    (book_dir / "profiles").mkdir()
+    sh.copy(str(res("zinegen") / "templates" / "sRGB2014.icc"), book_dir / "profiles" / "out.icc")
+    _set_output(book_dir, icc="profiles/out.icc")
+    monkeypatch.chdir(tmp_path_factory.mktemp("elsewhere"))
+    book = spec.load(book_dir / "book.yaml")
+    rep = render.render(book)
+    assert rep["icc"] == str((book_dir / "profiles" / "out.icc").resolve())
+    assert check.check(book)["ok"]
 
 
 def _set_output(book_dir: Path, **output):

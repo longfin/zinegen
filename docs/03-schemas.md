@@ -24,7 +24,7 @@ Unknown keys are errors. Units are in the key name: `_mm`, `_um`, `_pt`.
 | `page_numbers` | bool | false | not on title/blank/full-bleed pages |
 | `marks` | bool | true | crop + registration marks |
 | `output.standard` | `pdf/x-1a` `pdf/x-4` | pdf/x-1a | |
-| `output.icc` | path or profile name, or null | null | required for x-1a; also the output intent for x-4 |
+| `output.icc` | path or profile name, or null | null | required for x-1a; also the output intent for x-4. A relative path is resolved against the book directory (where book.yaml is), never the working directory; a bare name is also searched in the usual profile directories |
 | `output.intent` | perceptual / relative-colorimetric / saturation / absolute-colorimetric | perceptual | |
 | `output.jpeg_quality` | int 50–100 | 95 | CMYK conversion only; x-4 embeds source bytes |
 | `output.max_dpi` | int 150–2400, or null | 350 | x-1a only: each photo is resampled during its single CMYK conversion so its most demanding placement gets this effective resolution (never upsampled); a photo at most 1.1× above it (`render.RESAMPLE_TOLERANCE`) is converted at its source size. null keeps every source pixel. Below 300 every downsampled image is reported `LOW_DPI` (below 200 `BAD_DPI`). x-4 embeds source bytes |
@@ -118,6 +118,7 @@ they differ only on x-1a when `max_dpi` downsampled the photo. Layout geometry a
 | `NO_ROOM` | error | layout (margins, `gap_mm` or caption leave a photo box under 5 mm; photos not placed) |
 | `NO_OUTPUT_PROFILE` | error | render: x-4 with `output.icc` unset (a set but unresolvable profile fails the render instead) |
 | `DPI_ABOVE_NEED` | info | render: x-4 placements above 1.5 × `output.max_dpi` (default 350); x-4 embeds source bytes unchanged. Suggests a smaller `source.size` only if every placement stays ≥ 300 dpi with it |
+| `ORIENTATION_REENCODED` | warning | render: x-4 photo with an EXIF orientation tag; rotated and JPEG-encoded once (`output.jpeg_quality`) to embed it upright, so it is not the source bytes. x-1a applies the orientation during its single CMYK conversion (no issue) |
 | `NO_OUTPUT_INTENT`, `NO_DEST_PROFILE`, `NO_PDFX_VERSION`, `PDF_VERSION` | error | check |
 | `NO_TRIMBOX`, `TRIMBOX_SIZE`, `BLEED_SMALL` | error | check |
 | `NO_BLEEDBOX` | warning | check |
@@ -138,3 +139,6 @@ they differ only on x-1a when `max_dpi` downsampled the photo. Layout geometry a
 - v1, added (no version bump): `book.yaml` `output.max_dpi`; `report.json` `max_dpi` and `images[].source_px`;
   issue code `DPI_ABOVE_NEED`. Existing x-1a books are now downsampled to 350 dpi by default; set
   `output.max_dpi: null` to keep every source pixel.
+- v1, added (no version bump): issue code `ORIENTATION_REENCODED`. Clarified: a relative `output.icc` is
+  resolved against the book directory (it used to depend on the working directory); `px`/`source_px`
+  are sizes as displayed, with EXIF orientation applied.

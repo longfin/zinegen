@@ -97,18 +97,20 @@ def init_book(album: str, dir: str | None = None, standard: str = "pdf/x-1a", ic
     from .lr import compat
     if standard not in STANDARDS:
         raise ValueError(f"standard must be one of {', '.join(STANDARDS)}, not {standard!r}")
-    if icc:
-        prof = color.find_profile(icc)
-        if not prof:
-            raise ValueError(f"ICC profile {icc!r} not found (a file path, or a name searched in "
-                             f"{', '.join(str(d) for d in color.ADOBE_PROFILE_DIRS)})")
-        if standard == "pdf/x-1a" and color.profile_components(prof) != ["c", "m", "y", "k"]:
-            raise ValueError(f"pdf/x-1a needs a CMYK output profile; {prof.name} is not CMYK")
     check_album_id(album)
     info = compat.album_info(album)
     photos = compat.album_assets(album)
     name = re.sub(r"[^\w가-힣-]+", "_", info["name"] or album).strip("_")
     root = (Path(dir).expanduser() if dir else Path("books") / name).resolve()
+    if icc:
+        # resolved exactly as render will resolve output.icc: a relative path against the book directory
+        prof = color.find_profile(icc, base=root)
+        if not prof:
+            raise ValueError(f"ICC profile {icc!r} not found (a file path, relative paths resolved against the book "
+                             f"directory {root}, or a name searched in "
+                             f"{', '.join(str(d) for d in color.ADOBE_PROFILE_DIRS)})")
+        if standard == "pdf/x-1a" and color.profile_components(prof) != ["c", "m", "y", "k"]:
+            raise ValueError(f"pdf/x-1a needs a CMYK output profile; {prof.name} is not CMYK")
     out = root / "book.yaml"
     if out.exists() and not force:
         raise FileExistsError(f"{out} already exists")
@@ -270,9 +272,11 @@ def main(argv=None):
     sub.add_parser("mcp", help="run the MCP server (stdio)").set_defaults(f=cmd_mcp)
     a = ap.parse_args(argv)
     from lr_mcp.client import LrError
+
+    from .render import RenderError
     try:
         return a.f(a) or 0
-    except (ValueError, FileNotFoundError, LrError) as e:
+    except (ValueError, FileNotFoundError, LrError, RenderError) as e:
         log(f"error: {e}")
         return 2
 

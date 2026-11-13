@@ -130,7 +130,7 @@ def test_prune_keeps_only_used_conversions(tmp_path):
     unrelated.write_text("keep")
     source = tmp_path / "cache" / f"{A}.jpg"
     source.write_bytes(b"src")
-    render._prune_cmyk(cmyk, {used})
+    render._prune(cmyk, {used}, "cmyk")
     assert used.exists() and used.with_suffix(".json").exists()
     assert not stale.exists() and not stale.with_suffix(".json").exists()
     assert not other.exists() and not other.with_suffix(".json").exists()
@@ -169,3 +169,52 @@ def test_dpi_above_need_suggests_size_only_when_it_stays_printable(tmp_path):
     assert "1 of 1 placements" in msg
     # already at a small size: nothing smaller is suggested unless it fits
     assert _x4_hint(tmp_path, [{"template": "margin", "photo": A}], {A: (2048, 1365)}, size="2048") is None
+
+
+def test_resample_tolerance_boundary(tmp_path):
+    """Just under RESAMPLE_TOLERANCE above the target: converted at source size; just over: resampled."""
+    book = make_book(tmp_path, [{"template": "margin", "photo": A}])
+    probe = {A: (3000, 2000)}
+    need = render.target_sizes(layout.layout(book, probe), probe, 350)[A][0] / 3000   # scale for 350 dpi
+    # source width w gives w / (need * 3000) times the target dpi on this placement (aspect fixed, same box)
+    for factor, resampled in ((1.095, False), (1.105, True)):   # the documented 1.1x tolerance
+        w = round(need * 3000 * factor)
+        sizes = {A: (w, round(w * 2 / 3))}
+        t = render.target_sizes(layout.layout(book, sizes), sizes, 350)[A]
+        assert (t != sizes[A]) is resampled, (factor, t, sizes[A])
+        if resampled:
+            assert round(min(placed_dpi(book, sizes, {A: t})[A])) == 350
+
+
+def test_unplaced_photo_is_not_converted(tmp_path, cmyk_icc):
+    """A photo whose page has no room (NO_ROOM) has no placement: no conversion, nothing kept for it."""
+    book = make_book(tmp_path, [{"template": "margin", "photo": A},
+                                {"template": "pair", "photos": [A, B], "gap_mm": 200}], icc=str(cmyk_icc))
+    sizes = {A: (600, 400), B: (600, 400)}
+    pages = layout.layout(book, sizes)
+    assert render.placed(pages) == [A]
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    srcs = {}
+    for pid in (A, B):
+        srcs[pid] = cache / f"{pid}.jpg"
+        Image.new("RGB", sizes[pid], (200, 100, 50)).save(srcs[pid], quality=90)
+    info = {pid: color.image_info(f) for pid, f in srcs.items()}
+    files, emb, _, _ = render.prepare_images(book, pages, srcs, info, cmyk_icc)
+    assert set(files) == {A} and set(emb) == {A}
+    assert [f.name.split(".")[0] for f in (cache / "cmyk").glob("*.cmyk.jpg")] == [A]
+
+
+def test_find_profile_relative_to_book_dir(tmp_path, monkeypatch):
+    book = tmp_path / "book"
+    (book / "profiles").mkdir(parents=True)
+    prof = book / "profiles" / "press.icc"
+    prof.write_bytes(SRGB.read_bytes())
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "profiles").mkdir(parents=True)
+    (elsewhere / "profiles" / "press.icc").write_bytes(SRGB.read_bytes())
+    monkeypatch.chdir(elsewhere)
+    assert color.find_profile("profiles/press.icc", base=book) == prof.resolve()
+    assert color.find_profile("profiles/nope.icc", base=book) is None      # no fallback to the cwd
+    assert color.find_profile(str(prof), base=elsewhere) == prof.resolve()  # absolute paths unchanged
+    assert color.find_profile("profiles/press.icc") == (elsewhere / "profiles" / "press.icc").resolve()

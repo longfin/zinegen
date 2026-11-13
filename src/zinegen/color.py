@@ -6,7 +6,7 @@ import io
 import json
 from pathlib import Path
 
-from PIL import Image, ImageCms
+from PIL import Image, ImageCms, ImageOps
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -26,13 +26,20 @@ INTENTS = {
 }
 
 
-def find_profile(name_or_path: str | None) -> Path | None:
-    """Resolve an ICC profile by path or by file name searched in the usual directories."""
+def find_profile(name_or_path: str | None, base: Path | None = None) -> Path | None:
+    """Resolve an ICC profile by path or by file name searched in the usual directories.
+
+    A relative path is resolved against `base` (the book directory, where book.yaml lives) when given, never
+    against the process's working directory: `output.icc: profiles/press.icc` means the same file whoever
+    renders the book. Without `base` (doctor, tests) it is relative to the working directory, as before.
+    """
     if not name_or_path:
         return None
     p = Path(name_or_path).expanduser()
-    if p.exists():
-        return p
+    if base is not None and not p.is_absolute():
+        p = Path(base) / p
+    if p.is_file():
+        return p.resolve()
     for d in ADOBE_PROFILE_DIRS:
         for cand in (d / name_or_path, d / f"{name_or_path}.icc", d / f"{name_or_path}.icm"):
             if cand.exists():
@@ -50,14 +57,58 @@ def profile_components(path: Path) -> list[str]:
     return {"CMYK": ["c", "m", "y", "k"], "RGB": ["r", "g", "b"], "GRAY": ["gray"]}.get(space, ["c", "m", "y", "k"])
 
 
+EXIF_ORIENTATION = 0x0112
+
+
+def orientation(im: Image.Image) -> int:
+    """EXIF Orientation (1 = upright, 2-8 = needs a flip and/or rotation to display)."""
+    try:
+        o = int(im.getexif().get(EXIF_ORIENTATION, 1))
+    except Exception:  # noqa: BLE001 - malformed EXIF: treat as upright, like most viewers
+        return 1
+    return o if 1 <= o <= 8 else 1
+
+
 def image_info(path: Path) -> dict:
+    """Pixel size as displayed (EXIF orientation applied: 5-8 swap width and height), mode, ICC description."""
     with Image.open(path) as im:
         icc = im.info.get("icc_profile")
         desc = ImageCms.getProfileDescription(ImageCms.ImageCmsProfile(io.BytesIO(icc))).strip() if icc else None
-        return {"width": im.width, "height": im.height, "mode": im.mode, "icc": desc}
+        o = orientation(im)
+        w, h = (im.height, im.width) if o >= 5 else (im.width, im.height)
+        return {"width": w, "height": h, "mode": im.mode, "icc": desc, "orientation": o}
 
 
-CMYK_ALGO = "v3:lanczos:bpc:noicc"   # bump when the conversion itself changes, so old cache entries are not reused
+UPRIGHT_ALGO = "v1"
+
+
+def upright(src: Path, dest_dir: Path, quality: int = 95, log=None) -> Path:
+    """A copy of an EXIF-rotated JPEG with the orientation applied to the pixels and the tag removed,
+    keeping its ICC profile; JPEG-encoded once at `quality`. Used on PDF/X-4, where WeasyPrint would
+    otherwise rotate and re-encode the image itself at Pillow's default quality. Cached by content."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    h = hashlib.sha1(src.read_bytes())
+    h.update(f"{UPRIGHT_ALGO}:{quality}".encode())
+    out = dest_dir / f"{src.stem}.{h.hexdigest()[:16]}.upright.jpg"
+    if out.exists():
+        return out
+    with Image.open(src) as im:
+        im.load()
+        icc = im.info.get("icc_profile")
+        o = orientation(im)
+        fixed = ImageOps.exif_transpose(im)
+        if fixed.mode not in ("RGB", "L", "CMYK"):
+            fixed = fixed.convert("RGB")
+        tmp = out.with_name(out.name + ".part")
+        kw = {"icc_profile": icc} if icc else {}
+        fixed.save(tmp, format="JPEG", quality=quality, subsampling=0, **kw)
+        tmp.replace(out)
+    if log:
+        log(f"upright {src.name} (EXIF orientation {o}) -> {out.name}")
+    return out
+
+
+CMYK_ALGO = "v4:exif:lanczos:bpc:noicc"   # bump when the conversion itself changes, so old cache entries are not reused
 
 
 def cmyk_key(src: Path, profile: Path, intent: str, quality: int, size: tuple[int, int] | None) -> str:
@@ -80,11 +131,13 @@ def to_cmyk(src: Path, profile: Path, dest_dir: Path, intent: str = "perceptual"
 
     `size` (width, height) resamples the decoded source pixels before the colour transform; the result is
     JPEG-encoded exactly once, so the PDF/X-1a image is still a single lossy generation from the source.
-    `None` or the source size keeps every pixel. Never upsamples. Cached by `cmyk_key`. Returns the file path.
+    `None` or the source size keeps every pixel. Never upsamples. EXIF orientation is applied to the pixels
+    first, so sizes are as displayed (`image_info`) and the CMYK file needs no tag. Cached by `cmyk_key`.
+    Returns the file path.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
-    with Image.open(src) as im:
-        src_size = im.size
+    info = image_info(src)
+    src_size = (info["width"], info["height"])
     if size is not None:
         size = (min(int(size[0]), src_size[0]), min(int(size[1]), src_size[1]))
         if size == src_size:
@@ -97,6 +150,7 @@ def to_cmyk(src: Path, profile: Path, dest_dir: Path, intent: str = "perceptual"
         im.load()
         icc = im.info.get("icc_profile")
         inp = ImageCms.ImageCmsProfile(io.BytesIO(icc)) if icc else ImageCms.createProfile("sRGB")
+        im = ImageOps.exif_transpose(im)
         if im.mode != "RGB":
             im = im.convert("RGB")
         if size is not None:

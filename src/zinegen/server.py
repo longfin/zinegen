@@ -133,7 +133,7 @@ def zg_spec_help() -> str:
     lines += ["every page item may carry `note` (free text, ignored by the renderer)"]
     lines += ["", "# top-level keys (book.yaml must start with `version: 1`; unknown keys are rejected)", "title, trim {preset|width_mm,height_mm}, bleed_mm, binding, paper {caliper_um}, "
               "margins_mm {top,bottom,inside,outside}, fonts {body,caption,title}, type {body_pt,caption_pt,title_pt}, "
-              "page_numbers, marks, output {standard pdf/x-1a|pdf/x-4, icc, intent, jpeg_quality}, source {album_id,size}, pages[]"]
+              "page_numbers, marks, output {standard pdf/x-1a|pdf/x-4, icc (name, or path relative to the book directory), intent, jpeg_quality, max_dpi (x-1a downsampling target, default 350, null = keep all pixels)}, source {album_id,size}, pages[]"]
     return "\n".join(lines)
 
 
@@ -185,7 +185,8 @@ def zg_init_book(
                                                  "under the server's working directory")] = None,
     standard: Annotated[Standard, Field(description="PDF/X flavour: pdf/x-1a (CMYK, needs a CMYK icc) "
                                                     "or pdf/x-4 (ICC-tagged RGB)")] = "pdf/x-1a",
-    icc: Annotated[str | None, Field(description="Press ICC profile: a file path or a profile name such as "
+    icc: Annotated[str | None, Field(description="Press ICC profile: an absolute path, a path relative to "
+                                                  "the book directory, or a profile name such as "
                                                   "JapanColor2001Coated; default: the first one found")] = None,
     force: Annotated[bool, Field(description="Overwrite an existing book.yaml")] = False,
 ) -> str:
