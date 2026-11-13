@@ -45,6 +45,10 @@ Page items. `photo` is a 32-hex Lightroom asset id; `note` (string) is allowed o
 | `spread-full` | 2 | `photo` | `focal` |
 | `spread-margin` | 2 | `photo` | `caption` |
 
+Trim preset keys and their sizes are part of this format: a key is never renamed and its size never changes;
+new sizes get new keys. Labels may be corrected. `CROWN` stays 152×225 mm (신국판, mislabelled 크라운판 in 0.1.0);
+use `SINGUK` for 신국판 and `CROWN176` for 크라운판 (176×248). Preset names are case-insensitive.
+
 Layout rules applied after validation: page 1 is a recto; a 2-page template starting on a recto gets a blank
 inserted before it (`SPREAD_MOVED`); the total is padded with blanks to the binding multiple (`PAGES_PADDED`).
 
@@ -63,7 +67,10 @@ Written by `zinegen init`; read by agents when sequencing. Mirrors the fields pr
 ```
 
 `photos` is in the album's own order. `cropped` is the post-crop size reported by Lightroom; the embedded
-rendition's pixel size is authoritative for layout.
+rendition's pixel size is authoritative for layout. `keywords` is a list of keyword strings; 0.1.0 wrote
+`[true, …]` instead (the API sends `dc.subject` as `{keyword: true}`). This is a bug fix, not a format change.
+To refresh a 0.1.0 `photos.json` without touching `book.yaml`, run `zinegen init <album> --dir <scratch dir>`
+and copy its `photos.json` over (`--force` in the book directory would overwrite `book.yaml`).
 
 ## 3. `out/report.json` — render report (version 1)
 
