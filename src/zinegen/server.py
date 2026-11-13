@@ -45,18 +45,20 @@ BookArg = Annotated[str, Field(description="Book directory holding book.yaml, or
                                            "Absolute, or relative to the server's working directory.")]
 AlbumId = Annotated[str, Field(description="Lightroom album id (32 hex characters) from zg_list_albums")]
 
-# CLI commands named in messages raised by the shared pipeline code, and the tool to name instead
+# Shared pipeline code names CLI commands exactly as "`zinegen <cmd>`" (backticks, no arguments). Only that
+# phrase is replaced by the tool name, so paths or longer commands containing the same words stay intact.
 _CLI_TO_TOOL = {"albums": "zg_list_albums", "init": "zg_init_book", "fetch": "zg_fetch", "render": "zg_render",
                 "proof": "zg_proof", "check": "zg_check", "spine": "zg_spine"}
-_CLI_RE = re.compile(r"`?zinegen (" + "|".join(_CLI_TO_TOOL) + r")\b`?")
-# Lightroom API paths carry the catalog id: `GET https://lr.adobe.io/v2/catalogs/<id>/albums/x ...`
-_LR_PATH_RE = re.compile(r"(?:https://lr\.adobe\.io)?/v2/catalogs/[^/\s]+/")
+_CLI_RE = re.compile(r"`zinegen (" + "|".join(_CLI_TO_TOOL) + r")`")
+# Lightroom API paths carry the catalog id: `GET https://lr.adobe.io/v2/catalogs/<id>/albums/x ...`.
+# `<base>/v2/catalogs/<id>/rest` becomes `rest`; a bare `<base>/v2/catalogs/<id>` becomes `catalog`.
+_LR_PATH_RE = re.compile(r"(?:https?://[^/\s]*)?/v2/catalogs/[^/\s]+(/?)")
 
 
 def _for_agent(msg: str) -> str:
-    """Name zg_* tools instead of CLI commands and drop the raw Lightroom API path."""
+    """Name zg_* tools instead of CLI commands and drop the Lightroom API path (it carries the catalog id)."""
     msg = _CLI_RE.sub(lambda m: f"`{_CLI_TO_TOOL[m.group(1)]}`", msg)
-    return _LR_PATH_RE.sub("", msg)
+    return _LR_PATH_RE.sub(lambda m: "" if m.group(1) else "catalog", msg)
 
 
 def _tool(fn):
@@ -64,8 +66,7 @@ def _tool(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
-            with contextlib.redirect_stdout(sys.stderr):
-                return fn(*args, **kwargs)
+            return fn(*args, **kwargs)
         except ToolError as e:                       # includes lr_mcp's LrError
             raise ToolError(_for_agent(str(e))) from e
         except yaml.YAMLError as e:
@@ -76,6 +77,11 @@ def _tool(fn):
             raise ToolError(f"{Path(str(e.cmd[0])).name} failed (exit {e.returncode})" + (f": {tail}" if tail else "")) from e
         except (ValueError, OSError, RuntimeError) as e:  # SpecError is a ValueError; FileNotFound etc. are OSError
             raise ToolError(_for_agent(str(e))) from e
+        finally:
+            # A stray print may sit in sys.stdout's buffer. Flush it now, while the stdio transport points
+            # fd 1 at stderr (see main), so it is never written after fd 1 is handed back to the wire.
+            with contextlib.suppress(Exception):
+                sys.stdout.flush()
     return mcp.tool()(wrapper)
 
 
@@ -166,7 +172,10 @@ def zg_init_book(
     force: Annotated[bool, Field(description="Overwrite an existing book.yaml")] = False,
 ) -> str:
     """Draft book.yaml (and photos.json) for an album. Returns the absolute path of the book.yaml written."""
-    res = cli.init_book(album_id, dir, standard, icc, force, log=cli.log)
+    try:
+        res = cli.init_book(album_id, dir, standard, icc, force, log=cli.log)
+    except FileExistsError as e:
+        raise ToolError(f"{e}; pass force=true to overwrite") from e
     lines = [f"drafted {res['path']} ({res['photos']} photos, album order {res['sort']}, icc {res['icc'] or 'none'})"]
     lines += [f"warning: {w}" for w in res["warnings"]]
     lines.append("read it, then edit sequence/templates/captions and call zg_fetch + zg_render")
@@ -184,6 +193,7 @@ def zg_fetch(
     not in the album), missing (ids not found at all; fix book.yaml before zg_render).
     """
     res = cli.fetch_book(_book(book), force, log=cli.log)
+    res["errors"] = {pid: _for_agent(msg) for pid, msg in res["errors"].items()}
     if res["missing"]:
         res["warning"] = (f"{len(res['missing'])} photo id(s) in book.yaml were not found in Lightroom; "
                           "replace or remove them before zg_render")
@@ -224,6 +234,8 @@ def zg_proof(
     b = _book(book)
     files = proof.proof(b, dpi, log=cli.log)
     total = len(files)
+    if not total:
+        raise ToolError("Ghostscript found no pages in out/interior.pdf (an interrupted render?); run zg_render again")
     wanted = list(dict.fromkeys(spreads)) if spreads else list(range(1, total + 1))
     bad = [n for n in wanted if not 0 < n <= total]
     wanted = [n for n in wanted if 0 < n <= total]
@@ -244,8 +256,18 @@ def zg_proof(
 @_tool
 def zg_check(book: BookArg) -> str:
     """Structural PDF/X check of out/interior.pdf (boxes, output intent, colour spaces, fonts, resolution)."""
+    import pikepdf
+
     from . import check
-    return json.dumps(check.check(_book(book)), indent=1, ensure_ascii=False)
+    b = _book(book)
+    pdf = b.out_dir / "interior.pdf"
+    if not pdf.exists():
+        raise FileNotFoundError(f"no {pdf}; run zg_render first")
+    try:
+        res = check.check(b)
+    except pikepdf.PdfError as e:
+        raise ToolError(f"{pdf} cannot be read ({e}); it is probably incomplete, run zg_render again") from e
+    return json.dumps(res, indent=1, ensure_ascii=False)
 
 
 @_tool
@@ -256,10 +278,16 @@ def zg_spine(
     board_mm: Annotated[float, Field(ge=0, description="Hardcover board thickness in mm")] = 2.0,
 ) -> str:
     """Spine width in mm from page count and paper caliper (µm). Hardcover adds boards."""
-    return f"{presets.spine_mm(pages, caliper_um, binding, board_mm)} mm (pages rounded to {presets.round_up_pages(pages, binding)} for {binding})"
+    return f"{cli.spine(pages, caliper_um, binding, board_mm)} mm (pages rounded to {presets.round_up_pages(pages, binding)} for {binding})"
 
 
 def main():
+    # While it serves stdio, mcp points fd 1 at stderr for the whole process and writes JSON-RPC to a
+    # private duplicate of the original fd 1 (mcp.server.stdio.stdio_server). Prints therefore only reach
+    # the wire if they are still buffered when fd 1 is restored at shutdown; line buffering and the flush
+    # after every tool call (_tool) make sure nothing is left in the buffer by then.
+    with contextlib.suppress(AttributeError, ValueError):
+        sys.stdout.reconfigure(line_buffering=True)
     mcp.run()
 
 

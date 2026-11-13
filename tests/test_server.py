@@ -161,7 +161,7 @@ def test_init_writes_nothing_to_stdout(lightroom, tmp_path, capfd, monkeypatch):
     assert json.loads((path.parent / "photos.json").read_text())["photos"][0]["id"] == A
 
     again = call("zg_init_book", {"album_id": ALBUM, "standard": "pdf/x-4"})
-    assert again.is_error and "already exists" in text(again)
+    assert again.is_error and "already exists; pass force=true to overwrite" in text(again)
     assert not call("zg_init_book", {"album_id": ALBUM, "standard": "pdf/x-4", "force": True}).is_error
 
 
@@ -178,17 +178,50 @@ def test_init_unknown_icc_is_error(lightroom, tmp_path):
     assert not (tmp_path / "b").exists()
 
 
-def test_stray_print_goes_to_stderr(capfd):
-    @server._tool
-    def zz_noisy() -> str:
-        print("stray")
-        return "ok"
-    try:
-        res = call("zz_noisy")
-    finally:
-        server.mcp.remove_tool("zz_noisy")
-    out, err = capfd.readouterr()
-    assert text(res) == "ok" and "stray" not in out and "stray" in err
+NOISY_SERVER = """
+import sys, threading, time
+from zinegen import server
+started = threading.Barrier(2)
+
+@server._tool
+def zz_noisy(n: int) -> str:
+    print(f"stray-{n}-a", end="")      # unterminated: stays in the buffer until _tool flushes
+    started.wait(timeout=5)            # two calls overlap
+    time.sleep(0.1 * n)
+    print(f" stray-{n}-b", end="")
+    return "ok"
+
+server.main()
+"""
+
+
+def test_stray_print_never_reaches_protocol_stdout(tmp_path):
+    """Over real stdio, prints inside overlapping tool calls go to stderr, also after the server exits."""
+    import subprocess
+    import sys
+    msgs = [{"jsonrpc": "2.0", "id": 0, "method": "initialize",
+             "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"}]
+    msgs += [{"jsonrpc": "2.0", "id": n, "method": "tools/call", "params": {"name": "zz_noisy", "arguments": {"n": n}}}
+             for n in (1, 2)]
+    p = subprocess.Popen([sys.executable, "-c", NOISY_SERVER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, cwd=tmp_path)
+    p.stdin.write(b"".join(json.dumps(m).encode() + b"\n" for m in msgs))
+    p.stdin.flush()
+    replies = {}
+    while len(replies) < 3:
+        line = p.stdout.readline()
+        assert line, p.stderr.read().decode()[-2000:]
+        msg = json.loads(line)                       # every stdout line must be JSON-RPC
+        replies[msg["id"]] = msg
+    p.stdin.close()
+    p.wait(timeout=20)
+    rest, err = p.stdout.read(), p.stderr.read().decode()
+    assert rest == b""
+    assert [replies[n]["result"]["content"][0]["text"] for n in (1, 2)] == ["ok", "ok"]
+    assert replies[0]["result"]["serverInfo"]["version"] == cli.version()
+    for s in ("stray-1-a", "stray-1-b", "stray-2-a", "stray-2-b"):
+        assert s in err
 
 
 # ---------------------------------------------------------------- #6 fetch reports missing ids
@@ -208,6 +241,16 @@ def test_fetch_reports_missing(lightroom, tmp_path, monkeypatch):
     assert fetched["ids"] == [A]
     assert data["missing"] == [B] and data["outside_album"] == []
     assert "zg_render" in data["warning"]
+
+
+def test_fetch_errors_hide_catalog_id(lightroom, tmp_path, monkeypatch):
+    write_book(tmp_path, pages=[{"template": "margin", "photo": A}])
+    monkeypatch.setattr(compat, "fetch_renditions", lambda photos, dest, size="fullsize", force=False, workers=4, log=None: {
+        "downloaded": 0, "skipped": 0, "errors": {A: f"GET https://lr.adobe.io/v2/catalogs/c0ffee/assets/{A}/renditions/"
+                                                    "fullsize failed after 3 attempts: TimeoutError()"}})
+    res = call("zg_fetch", {"book": str(tmp_path)})
+    assert "c0ffee" not in text(res) and "catalogs" not in text(res)
+    assert json.loads(text(res))["errors"][A].startswith(f"GET assets/{A}/renditions/fullsize failed")
 
 
 # ---------------------------------------------------------------- #4 proof truncation
@@ -252,7 +295,83 @@ def test_cli_version(capsys):
     assert capsys.readouterr().out.strip() == f"zinegen {cli.version()}"
 
 
-def test_cli_spine_rejects_non_positive(capsys):
-    with pytest.raises(SystemExit):
-        cli.main(["spine", "--pages", "-4", "--caliper", "100"])
-    assert "greater than 0" in capsys.readouterr().err
+@pytest.mark.parametrize("args,msg", [
+    (["--pages", "-4", "--caliper", "100"], "pages must be greater than 0"),
+    (["--pages", "40", "--caliper", "0"], "caliper must be greater than 0"),
+    (["--pages", "40", "--caliper", "100", "--board", "-3", "--binding", "hardcover"], "board must be 0 mm or more"),
+])
+def test_cli_spine_rejects_bad_input(capsys, args, msg):
+    assert cli.main(["spine", *args]) == 2
+    out, err = capsys.readouterr()
+    assert out == "" and msg in err
+
+
+def test_mcp_spine_rejects_negative_board():
+    res = call("zg_spine", {"pages": 40, "caliper_um": 100, "binding": "hardcover", "board_mm": -3})
+    assert res.is_error
+
+
+def test_cli_init_exists(lightroom, tmp_path, capsys, monkeypatch):
+    from zinegen import color
+    monkeypatch.setattr(color, "find_profile", lambda name: None)
+    d = str(tmp_path / "b")
+    assert cli.main(["init", "--album", ALBUM, "--dir", d, "--standard", "pdf/x-4"]) == 0
+    assert capsys.readouterr().out.strip() == str(tmp_path / "b" / "book.yaml")
+    assert cli.main(["init", "--album", ALBUM, "--dir", d, "--standard", "pdf/x-4"]) == 1
+    assert "already exists; use --force to overwrite" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- message rewriting
+
+@pytest.mark.parametrize("msg,want", [
+    ("missing cached photo x; run `zinegen fetch` first", "missing cached photo x; run `zg_fetch` first"),
+    ("/tmp/zinegen render/x does not exist", "/tmp/zinegen render/x does not exist"),
+    ("run `zinegen fetch --force` first", "run `zinegen fetch --force` first"),
+    ("GET /v2/catalogs/c0ffee/albums/x returned 404", "GET albums/x returned 404"),
+    ("GET https://lr.adobe.io/v2/catalogs/c0ffee/assets/a/renditions/fullsize failed",
+     "GET assets/a/renditions/fullsize failed"),
+    ("GET https://lr.adobe.io/v2/catalogs/c0ffee returned 500", "GET catalog returned 500"),
+    ("catalog /v2/catalogs/c0ffee", "catalog catalog"),
+])
+def test_for_agent(msg, want):
+    assert server._for_agent(msg) == want
+
+
+def test_missing_book_path_with_cli_words(tmp_path):
+    d = tmp_path / "zinegen render" / "x"
+    res = call("zg_check", {"book": str(d)})
+    assert res.is_error and f"{d} does not exist" in text(res)
+
+
+# ---------------------------------------------------------------- unreadable out/interior.pdf
+
+@pytest.fixture
+def broken_pdf(tmp_path):
+    write_book(tmp_path)
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "interior.pdf").write_bytes(b"%PDF-1.4\ngarbage")
+    return tmp_path
+
+
+def test_check_unreadable_pdf(broken_pdf):
+    res = call("zg_check", {"book": str(broken_pdf)})
+    assert res.is_error and "cannot be read" in text(res) and "zg_render again" in text(res)
+
+
+def test_check_before_render(tmp_path):
+    write_book(tmp_path)
+    res = call("zg_check", {"book": str(tmp_path)})
+    assert res.is_error and "zg_render first" in text(res)
+
+
+def test_proof_without_pages_is_error(broken_pdf, monkeypatch):
+    from zinegen import proof
+    monkeypatch.setattr(proof, "render_pages", lambda pdf, dest, dpi=50: [])
+    res = call("zg_proof", {"book": str(broken_pdf)})
+    assert res.is_error and "no pages" in text(res) and "zg_render again" in text(res)
+
+
+@pytest.mark.skipif(not __import__("shutil").which("gs"), reason="Ghostscript not installed")
+def test_proof_unreadable_pdf_with_ghostscript(broken_pdf):
+    res = call("zg_proof", {"book": str(broken_pdf)})
+    assert res.is_error

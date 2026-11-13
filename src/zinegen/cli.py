@@ -111,7 +111,7 @@ def init_book(album: str, dir: str | None = None, standard: str = "pdf/x-1a", ic
     root = (Path(dir).expanduser() if dir else Path("books") / name).resolve()
     out = root / "book.yaml"
     if out.exists() and not force:
-        raise FileExistsError(f"{out} already exists; pass force to overwrite")
+        raise FileExistsError(f"{out} already exists")
     root.mkdir(parents=True, exist_ok=True)
     warnings = []
     icc = icc or next((p for p in ("JapanColor2001Coated", "CoatedFOGRA39") if color.find_profile(p)), None)
@@ -126,7 +126,11 @@ def init_book(album: str, dir: str | None = None, standard: str = "pdf/x-1a", ic
 
 
 def cmd_init(a):
-    res = init_book(a.album, a.dir, a.standard, a.icc, a.force, log=log)
+    try:
+        res = init_book(a.album, a.dir, a.standard, a.icc, a.force, log=log)
+    except FileExistsError as e:
+        log(f"{e}; use --force to overwrite")
+        return 1
     for w in res["warnings"]:
         log(f"warning: {w}")
     print(res["path"])
@@ -199,8 +203,21 @@ def cmd_build(a):
     return cmd_check(a)
 
 
+def spine(pages: int, caliper_um: float, binding: str = "perfect", board_mm: float = 2.0) -> float:
+    """Validated spine width in mm; shared by `zinegen spine` and zg_spine."""
+    if pages <= 0:
+        raise ValueError(f"pages must be greater than 0, not {pages}")
+    if caliper_um <= 0:
+        raise ValueError(f"caliper must be greater than 0 µm, not {caliper_um}")
+    if board_mm < 0:
+        raise ValueError(f"board must be 0 mm or more, not {board_mm}")
+    if binding not in presets.BINDINGS:
+        raise ValueError(f"binding must be one of {', '.join(presets.BINDINGS)}, not {binding!r}")
+    return presets.spine_mm(pages, caliper_um, binding, board_mm)
+
+
 def cmd_spine(a):
-    print(f"{presets.spine_mm(a.pages, a.caliper, a.binding, a.board)} mm")
+    print(f"{spine(a.pages, a.caliper, a.binding, a.board)} mm")
 
 
 def cmd_mcp(_):
@@ -215,15 +232,6 @@ def version() -> str:
         return _v("zinegen")
     except PackageNotFoundError:
         return "unknown"
-
-
-def _positive(kind):
-    def parse(text):
-        v = kind(text)
-        if v <= 0:
-            raise argparse.ArgumentTypeError(f"must be greater than 0, not {text}")
-        return v
-    return parse
 
 
 def main(argv=None):
@@ -254,8 +262,8 @@ def main(argv=None):
     p.add_argument("--dpi", type=int, default=50)
     p.set_defaults(f=cmd_proof)
     p = sub.add_parser("spine", help="spine width from page count and paper caliper")
-    p.add_argument("--pages", type=_positive(int), required=True)
-    p.add_argument("--caliper", type=_positive(float), required=True, help="paper caliper in µm")
+    p.add_argument("--pages", type=int, required=True)
+    p.add_argument("--caliper", type=float, required=True, help="paper caliper in µm")
     p.add_argument("--binding", default="perfect", choices=list(presets.BINDINGS))
     p.add_argument("--board", type=float, default=2.0, help="hardcover board thickness in mm")
     p.set_defaults(f=cmd_spine)
@@ -264,7 +272,7 @@ def main(argv=None):
     from lr_mcp.client import LrError
     try:
         return a.f(a) or 0
-    except (ValueError, FileNotFoundError, FileExistsError, LrError) as e:
+    except (ValueError, FileNotFoundError, LrError) as e:
         log(f"error: {e}")
         return 2
 
