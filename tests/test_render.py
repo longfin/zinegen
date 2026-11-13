@@ -10,7 +10,7 @@ import pytest
 import yaml
 from PIL import Image
 
-from zinegen import check, render, spec
+from zinegen import check, color, render, spec
 from zinegen.render import _setup_dyld
 
 A = "00000000000000000000000000000001"
@@ -80,11 +80,37 @@ def test_pdfx4_embeds_source_bytes_unchanged(book_dir: Path):
 
     import pikepdf
     book = spec.load(book_dir / "book.yaml")
-    render.render(book)
+    rep = render.render(book)
     src = {hashlib.sha1(f.read_bytes()).hexdigest() for f in (book_dir / "cache").glob("*.jpg")}
     with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
         embedded = {hashlib.sha1(x.read_raw_bytes()).hexdigest() for page in p.pages for _, x in page.images.items()}
     assert embedded == src
+    assert rep["max_dpi"] is None
+    assert all(i["px"] == i["source_px"] for i in rep["images"])
+
+
+CMYK = next((n for n in ("JapanColor2001Coated", "CoatedFOGRA39", "USWebCoatedSWOP") if color.find_profile(n)), None)
+
+
+@pytest.mark.skipif(CMYK is None, reason="no CMYK press profile installed")
+def test_pdfx1a_downsampled_once(book_dir: Path):
+    import hashlib
+
+    import pikepdf
+    _set_output(book_dir, standard="pdf/x-1a", icc=CMYK, max_dpi=200)
+    book = spec.load(book_dir / "book.yaml")
+    rep = render.render(book)
+    assert check.check(book)["ok"]
+    cmyk = {hashlib.sha1(f.read_bytes()).hexdigest() for f in (book_dir / "cache" / "cmyk").glob("*.jpg")}
+    with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
+        embedded = {hashlib.sha1(x.read_raw_bytes()).hexdigest() for page in p.pages for _, x in page.images.items()}
+    assert embedded == cmyk                         # one conversion per photo, embedded as is, nothing stale
+    assert rep["max_dpi"] == 200
+    for photo in {i["photo"] for i in rep["images"]}:
+        items = [i for i in rep["images"] if i["photo"] == photo]
+        # the most demanding placement lands on the target unless the source had fewer pixels
+        assert min(i["dpi"] for i in items) == 200 or items[0]["px"] == items[0]["source_px"]
+    assert any(i["px"][0] < i["source_px"][0] for i in rep["images"])
 
 
 def _set_output(book_dir: Path, **output):

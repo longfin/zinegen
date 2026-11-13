@@ -14,6 +14,7 @@ CODES = {
     "NO_ROOM": "error",
     # render
     "NO_OUTPUT_PROFILE": "error",
+    "DPI_ABOVE_NEED": "info",
     # pdf check
     "NO_OUTPUT_INTENT": "error",
     "NO_DEST_PROFILE": "error",

@@ -57,19 +57,39 @@ def image_info(path: Path) -> dict:
         return {"width": im.width, "height": im.height, "mode": im.mode, "icc": desc}
 
 
+CMYK_ALGO = "v2:lanczos:bpc"   # bump when the conversion itself changes, so old cache entries are not reused
+
+
+def cmyk_key(src: Path, profile: Path, intent: str, quality: int, size: tuple[int, int] | None) -> str:
+    """Cache key of a CMYK conversion: everything that changes the output bytes.
+
+    The whole source file is hashed (a re-fetched rendition with the same first MiB must not hit the cache),
+    plus the profile bytes, intent, JPEG quality, the target pixel size (None = source size) and the algorithm.
+    """
+    h = hashlib.sha1()
+    h.update(src.read_bytes())
+    h.update(profile.read_bytes())
+    target = "source" if size is None else f"{size[0]}x{size[1]}"
+    h.update(f"{CMYK_ALGO}:{intent}:{quality}:{target}".encode())
+    return h.hexdigest()[:16]
+
+
 def to_cmyk(src: Path, profile: Path, dest_dir: Path, intent: str = "perceptual", quality: int = 95,
-            log=None) -> Path:
+            log=None, size: tuple[int, int] | None = None) -> Path:
     """Convert `src` (RGB JPEG with embedded ICC, else assumed sRGB) to a CMYK JPEG in `dest_dir`.
 
-    Cached by (source bytes hash, profile, intent, quality). Returns the CMYK file path.
+    `size` (width, height) resamples the decoded source pixels before the colour transform; the result is
+    JPEG-encoded exactly once, so the PDF/X-1a image is still a single lossy generation from the source.
+    `None` or the source size keeps every pixel. Never upsamples. Cached by `cmyk_key`. Returns the file path.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
-    h = hashlib.sha1()
-    h.update(src.read_bytes()[:1 << 20])            # first MiB is plenty to identify the render
-    h.update(str(src.stat().st_size).encode())
-    h.update(profile.read_bytes())
-    h.update(f"{intent}:{quality}".encode())
-    key = h.hexdigest()[:16]
+    with Image.open(src) as im:
+        src_size = im.size
+    if size is not None:
+        size = (min(int(size[0]), src_size[0]), min(int(size[1]), src_size[1]))
+        if size == src_size:
+            size = None
+    key = cmyk_key(src, profile, intent, quality, size)
     out = dest_dir / f"{src.stem}.{key}.cmyk.jpg"
     if out.exists():
         return out
@@ -79,15 +99,21 @@ def to_cmyk(src: Path, profile: Path, dest_dir: Path, intent: str = "perceptual"
         inp = ImageCms.ImageCmsProfile(io.BytesIO(icc)) if icc else ImageCms.createProfile("sRGB")
         if im.mode != "RGB":
             im = im.convert("RGB")
+        if size is not None:
+            im = im.resize(size, Image.Resampling.LANCZOS, reducing_gap=3.0)
         prof = ImageCms.ImageCmsProfile(str(profile))
         tr = ImageCms.buildTransform(inp, prof, "RGB", "CMYK", renderingIntent=INTENTS[intent],
                                      flags=ImageCms.Flags.BLACKPOINTCOMPENSATION)
         cmyk = ImageCms.applyTransform(im, tr)
-        cmyk.save(out, quality=quality, subsampling=0, icc_profile=prof.tobytes(), dpi=(300, 300))
-    meta = {"source": str(src), "profile": profile_description(profile), "intent": intent, "quality": quality}
+        tmp = out.with_name(out.name + ".part")
+        cmyk.save(tmp, format="JPEG", quality=quality, subsampling=0, icc_profile=prof.tobytes(), dpi=(300, 300))
+        tmp.replace(out)
+    meta = {"source": str(src), "source_px": list(src_size), "px": list(size or src_size),
+            "profile": profile_description(profile), "intent": intent, "quality": quality, "algo": CMYK_ALGO}
     out.with_suffix(".json").write_text(json.dumps(meta))
     if log:
-        log(f"cmyk {src.name} -> {out.name}")
+        log(f"cmyk {src.name} {src_size[0]}x{src_size[1]} -> {out.name}" +
+            (f" ({size[0]}x{size[1]})" if size else ""))
     return out
 
 

@@ -32,6 +32,8 @@ TEMPLATES = {
     "spread-margin": (2, "사진 한 장을 펼침 여백 안에(왼쪽 페이지에서 시작)"),
 }
 
+DEFAULT_MAX_DPI = 350   # PDF/X-1a images are downsampled to this effective resolution at their placed size
+
 DEFAULTS = {
     "bleed_mm": 3,
     "binding": "perfect",
@@ -40,7 +42,8 @@ DEFAULTS = {
     "type": {"body_pt": 10, "caption_pt": 7.5, "title_pt": 24},
     "page_numbers": False,
     "marks": True,
-    "output": {"standard": "pdf/x-1a", "intent": "perceptual", "icc": None, "jpeg_quality": 95},
+    "output": {"standard": "pdf/x-1a", "intent": "perceptual", "icc": None, "jpeg_quality": 95,
+               "max_dpi": DEFAULT_MAX_DPI},
     "source": {"size": "fullsize"},
 }
 

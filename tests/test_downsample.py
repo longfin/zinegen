@@ -1,0 +1,120 @@
+"""PDF/X-1a downsampling (issue #5): target pixel sizes from the layout, the CMYK cache key, and the
+single conversion. No network; the conversion test needs a CMYK press profile and is skipped without one."""
+from __future__ import annotations
+
+from importlib.resources import files
+from pathlib import Path
+
+import pytest
+import yaml
+from PIL import Image
+
+from zinegen import color, layout, render, spec
+
+A = "00000000000000000000000000000001"
+B = "00000000000000000000000000000002"
+SRGB = Path(str(files("zinegen") / "templates" / "sRGB2014.icc"))
+
+
+def make_book(tmp_path: Path, pages: list[dict], **output) -> spec.Book:
+    doc = {"version": 1, "title": "T", "trim": {"preset": "A5"}, "bleed_mm": 3, "binding": "perfect",
+           "output": {"standard": "pdf/x-1a", **output}, "pages": pages}
+    (tmp_path / "book.yaml").write_text(yaml.safe_dump(doc))
+    return spec.load(tmp_path / "book.yaml")
+
+
+def placed_dpi(book, sizes, targets) -> dict[str, list[float]]:
+    """Lay out with source sizes, then measure each placement with the embedded (target) pixels."""
+    out: dict[str, list[float]] = {}
+    for pl in layout.layout(book, sizes):
+        for im in pl.images:
+            im.px = targets[im.photo]
+            out.setdefault(im.photo, []).append(im.dpi)
+    return out
+
+
+def test_full_bleed_with_focal_sized_for_whole_scaled_image(tmp_path):
+    book = make_book(tmp_path, [{"template": "full-bleed", "photo": A, "focal": [0.2, 0.5]}])
+    sizes = {A: (6000, 4000)}
+    t = render.target_sizes(layout.layout(book, sizes), sizes, 350)
+    # A5 + 3 mm bleed = 154 × 216 mm; a 3:2 cover placement is 324 mm wide (most of it cropped away),
+    # and every visible pixel must still be 350 dpi: 324 / 25.4 * 350 = 4464.6 -> 4465 px
+    assert t[A] == (4465, 2977)
+    assert min(placed_dpi(book, sizes, t)[A]) >= 350
+
+
+def test_photo_used_twice_sized_for_largest_placement(tmp_path):
+    book = make_book(tmp_path, [{"template": "margin", "photo": A}, {"template": "blank"},
+                                {"template": "spread-full", "photo": A}])
+    sizes = {A: (9000, 6000)}
+    t = render.target_sizes(layout.layout(book, sizes), sizes, 350)
+    dpis = placed_dpi(book, sizes, t)[A]
+    assert round(min(dpis)) == 350                  # the spread is the binding placement
+    assert max(dpis) > 350                          # the margin placement simply gets more
+    assert t[A][0] < 9000
+
+
+def test_never_upsamples_and_disabled(tmp_path):
+    book = make_book(tmp_path, [{"template": "full-bleed", "photo": A}, {"template": "margin", "photo": B}])
+    sizes = {A: (1200, 800), B: (6000, 4000)}
+    pages = layout.layout(book, sizes)
+    t = render.target_sizes(pages, sizes, 350)
+    assert t[A] == (1200, 800)                      # already below 350 dpi: untouched
+    assert t[B][0] < 6000 and t[B][1] < 4000
+    assert render.target_sizes(pages, sizes, None) == sizes
+
+
+def test_aspect_kept_within_a_pixel(tmp_path):
+    book = make_book(tmp_path, [{"template": "pair", "photos": [A, B]}])
+    sizes = {A: (6000, 4000), B: (3333, 5000)}
+    t = render.target_sizes(layout.layout(book, sizes), sizes, 350)
+    for pid, (w, h) in sizes.items():
+        tw, th = t[pid]
+        assert tw < w and abs(tw - th * w / h) <= 1
+
+
+def test_max_dpi_setting(tmp_path):
+    assert render.max_dpi(make_book(tmp_path, [{"template": "blank"}])) == spec.DEFAULT_MAX_DPI == 350
+    assert render.max_dpi(make_book(tmp_path, [{"template": "blank"}], max_dpi=300)) == 300
+    assert render.max_dpi(make_book(tmp_path, [{"template": "blank"}], max_dpi=None)) is None
+    with pytest.raises(spec.SpecError, match="max_dpi"):
+        make_book(tmp_path, [{"template": "blank"}], max_dpi=50)
+
+
+def test_cmyk_key_covers_everything_that_changes_output(tmp_path):
+    src = tmp_path / "a.jpg"
+    Image.new("RGB", (64, 64), (10, 20, 30)).save(src, quality=90)
+    base = color.cmyk_key(src, SRGB, "perceptual", 95, (32, 32))
+    assert base == color.cmyk_key(src, SRGB, "perceptual", 95, (32, 32))
+    assert base != color.cmyk_key(src, SRGB, "perceptual", 95, (33, 33))
+    assert base != color.cmyk_key(src, SRGB, "perceptual", 95, None)
+    assert base != color.cmyk_key(src, SRGB, "relative-colorimetric", 95, (32, 32))
+    assert base != color.cmyk_key(src, SRGB, "perceptual", 90, (32, 32))
+    other = tmp_path / "p.icc"
+    other.write_bytes(SRGB.read_bytes() + b"x")
+    assert base != color.cmyk_key(src, other, "perceptual", 95, (32, 32))
+    # a re-fetched rendition that differs only after the first MiB must not hit the old entry
+    big = tmp_path / "big.jpg"
+    big.write_bytes(b"\0" * (1 << 21))
+    k1 = color.cmyk_key(big, SRGB, "perceptual", 95, None)
+    big.write_bytes(b"\0" * ((1 << 21) - 1) + b"\1")
+    assert k1 != color.cmyk_key(big, SRGB, "perceptual", 95, None)
+
+
+CMYK = next((p for p in (color.find_profile(n) for n in ("JapanColor2001Coated", "CoatedFOGRA39", "USWebCoatedSWOP"))
+             if p), None)
+
+
+@pytest.mark.skipif(CMYK is None, reason="no CMYK press profile installed")
+def test_to_cmyk_resizes_once_and_caches(tmp_path):
+    src = tmp_path / "a.jpg"
+    Image.linear_gradient("L").resize((800, 600)).convert("RGB").save(src, quality=90, icc_profile=SRGB.read_bytes())
+    d = tmp_path / "cmyk"
+    out = color.to_cmyk(src, CMYK, d, size=(400, 300))
+    with Image.open(out) as im:
+        assert im.mode == "CMYK" and im.size == (400, 300)
+    mtime = out.stat().st_mtime_ns
+    assert color.to_cmyk(src, CMYK, d, size=(400, 300)) == out and out.stat().st_mtime_ns == mtime
+    assert color.to_cmyk(src, CMYK, d, size=(2000, 1500)) == color.to_cmyk(src, CMYK, d)   # clamped, no upsample
+    with Image.open(color.to_cmyk(src, CMYK, d, size=(2000, 1500))) as im:
+        assert im.size == (800, 600)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -12,7 +13,7 @@ import jinja2
 from . import color
 from . import layout as _layout
 from .issues import Issue
-from .spec import Book
+from .spec import DEFAULT_MAX_DPI, Book
 
 STANDARDS = {"pdf/x-1a": "pdf/x-1a", "pdf/x-4": "pdf/x-4"}
 
@@ -75,39 +76,87 @@ def resolve_icc(book: Book) -> Path | None:
     return icc
 
 
-def prepare_images(book: Book, log=None) -> tuple[dict[str, Path], dict[str, tuple[int, int]], dict]:
-    """Return (photo id -> file to embed, photo id -> pixel size, colour info)."""
+def max_dpi(book: Book) -> int | None:
+    """`output.max_dpi`: target effective resolution for PDF/X-1a images; None disables downsampling."""
+    v = book.output.get("max_dpi", DEFAULT_MAX_DPI)
+    return int(v) if v else None
+
+
+def target_sizes(pages: list[_layout.PageLayout], sizes: dict[str, tuple[int, int]],
+                 dpi: int | None) -> dict[str, tuple[int, int]]:
+    """Pixel size to embed per photo so that its most demanding placement still gets `dpi`.
+
+    `pages` must be laid out with the source `sizes`. A cover placement's `w` is the full scaled image (the
+    cropped part included), so `px / (w / 25.4)` is the effective resolution of every visible pixel. A photo
+    used more than once is sized for its largest placement. Never upsamples; rounds up so the target holds.
+    """
+    if not dpi:
+        return dict(sizes)
+    need: dict[str, float] = {}
+    for pl in pages:
+        for im in pl.images:
+            scale = dpi * (im.w / 25.4) / sizes[im.photo][0]
+            need[im.photo] = max(need.get(im.photo, 0.0), scale)
+    out = {}
+    for pid, (w, h) in sizes.items():
+        s = need.get(pid, 1.0)
+        out[pid] = (w, h) if s >= 1 else (min(w, math.ceil(w * s - 1e-9)), min(h, math.ceil(h * s - 1e-9)))
+    return out
+
+
+def prepare_images(book: Book, pages: list[_layout.PageLayout], srcs: dict[str, Path],
+                   src_sizes: dict[str, tuple[int, int]], icc: Path | None,
+                   log=None) -> tuple[dict[str, Path], dict[str, tuple[int, int]], dict]:
+    """Return (photo id -> file to embed, photo id -> pixel size of that file, colour info).
+
+    PDF/X-1a: one conversion per photo from the source pixels (resampled to `target_sizes`, then P3 -> CMYK,
+    then one JPEG encode). PDF/X-4: the source files, byte for byte.
+    """
     std = book.output["standard"]
-    srcs = source_files(book)
     info = {"standard": std}
-    icc = resolve_icc(book)
     if std == "pdf/x-1a":
-        files = {pid: color.to_cmyk(f, icc, book.cache_dir.resolve() / "cmyk", book.output.get("intent", "perceptual"),
-                                    int(book.output.get("jpeg_quality", 95)), log) for pid, f in srcs.items()}
+        targets = target_sizes(pages, src_sizes, max_dpi(book))
+        cmyk_dir = book.cache_dir.resolve() / "cmyk"
+        files = {pid: color.to_cmyk(f, icc, cmyk_dir, book.output.get("intent", "perceptual"),
+                                    int(book.output.get("jpeg_quality", 95)), log, size=targets[pid])
+                 for pid, f in srcs.items()}
+        _prune_cmyk(cmyk_dir, set(files.values()))
+        sizes = {pid: tuple(color.image_info(f)[k] for k in ("width", "height")) for pid, f in files.items()}
     else:
-        files = dict(srcs)
-    sizes = {}
-    for pid, f in srcs.items():
-        i = color.image_info(f)
-        sizes[pid] = (i["width"], i["height"])
+        files, sizes = dict(srcs), dict(src_sizes)
     info["icc"] = str(icc) if icc else None
     info["icc_description"] = color.profile_description(icc) if icc else None
     info["icc_components"] = color.profile_components(icc) if icc else None
     return files, sizes, info
 
 
+def _prune_cmyk(cmyk_dir: Path, keep: set[Path]):
+    """Drop CMYK conversions this render does not use (earlier layouts, sizes or profiles), so the derived
+    cache does not grow with every iteration. The next render that needs one simply converts again."""
+    for f in cmyk_dir.glob("*.cmyk.*"):
+        if f.with_suffix(".jpg") not in keep:
+            f.unlink(missing_ok=True)
+
+
 def render(book: Book, log=None, marks: bool | None = None) -> dict:
     _setup_dyld()
     import weasyprint  # imported late so `zinegen doctor` can explain a broken install
 
-    files, sizes, cinfo = prepare_images(book, log)
-    pages = _layout.layout(book, sizes)
+    icc = resolve_icc(book)
+    srcs = source_files(book)
+    src_sizes = {pid: tuple(color.image_info(f)[k] for k in ("width", "height")) for pid, f in srcs.items()}
+    # Geometry comes from the source pixels, so downsampling can never move anything on the page.
+    pages = _layout.layout(book, src_sizes)
+    files, sizes, cinfo = prepare_images(book, pages, srcs, src_sizes, icc, log)
+    for pl in pages:                       # report the resolution of what is actually embedded
+        for im in pl.images:
+            im.px = sizes[im.photo]
     rep = _layout.report(book, pages)
     rep.update(cinfo)
-    if not cinfo["icc"]:
-        rep["issues"].append(Issue("NO_OUTPUT_PROFILE", "output.icc is not set, so the PDF has no output intent and "
-                                   "is not valid PDF/X-4; fine for proofs, not for print. Set output.icc to the "
-                                   "printer's profile.").to_dict())
+    rep["max_dpi"] = max_dpi(book) if book.output["standard"] == "pdf/x-1a" else None
+    for item in rep["images"]:
+        item["source_px"] = list(src_sizes[item["photo"]])
+    rep["issues"] += [i.to_dict() for i in _render_issues(book, rep, icc)]
     env = jinja2.Environment(loader=jinja2.PackageLoader("zinegen", "templates"), autoescape=True)
     tpl = env.get_template("book.html.j2")
     icc_uri = Path(cinfo["icc"]).resolve().as_uri() if cinfo["icc"] else None
@@ -123,7 +172,7 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     std = STANDARDS[book.output["standard"]]
     doc = weasyprint.HTML(string=html, base_url=str(html_path))
     # jpeg_quality=None and dpi=None keep WeasyPrint's JPEG passthrough: any quality re-encodes every JPEG,
-    # and dpi thumbnails (and re-encodes) images above it.
+    # and dpi thumbnails (and re-encodes) images above it. Resolution is decided once, in prepare_images.
     doc.write_pdf(pdf_path, pdf_variant=std, output_intent="--press" if icc_uri else None,
                   jpeg_quality=None, dpi=None, optimize_images=False)
     postprocess(pdf_path, book)
@@ -133,6 +182,22 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     if log:
         log(f"wrote {pdf_path} ({pdf_path.stat().st_size // 1024} KB), {rep['pages']} pages, {len(rep['issues'])} issues")
     return rep
+
+
+def _render_issues(book: Book, rep: dict, icc: Path | None) -> list[Issue]:
+    issues = []
+    if icc is None:
+        issues.append(Issue("NO_OUTPUT_PROFILE", "output.icc is not set, so the PDF has no output intent and is not "
+                            "valid PDF/X-4; fine for proofs, not for print. Set output.icc to the printer's profile."))
+    target = max_dpi(book) or DEFAULT_MAX_DPI
+    if book.output["standard"] == "pdf/x-4":
+        high = [i for i in rep["images"] if i["dpi"] > target * 1.5]
+        if high:
+            issues.append(Issue("DPI_ABOVE_NEED", f"{len(high)} of {len(rep['images'])} placed images are above "
+                                f"{round(target * 1.5)} dpi (max {max(i['dpi'] for i in high)}); PDF/X-4 embeds the "
+                                "source JPEGs unchanged, so the file is larger than print needs. Lower source.size "
+                                "to shrink it."))
+    return issues
 
 
 def postprocess(pdf_path: Path, book: Book):
