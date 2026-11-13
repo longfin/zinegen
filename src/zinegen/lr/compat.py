@@ -6,6 +6,7 @@ Everything here is read-only against the Partner API.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -152,23 +153,38 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
             continue
         jobs.append((p, path))
     errors = {}
+    lock = threading.Lock()
+
+    def save_index():
+        # Called under `lock` after every download, so an interrupted run keeps what it already fetched.
+        tmp = index_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(index, indent=2))
+        tmp.replace(index_file)
 
     def fetch(job):
         p, path = job
-        for attempt in range(3):
+        attempts = 3
+        for attempt in range(attempts):
             try:
                 data = lr.rendition(p.id, size)
-                path.write_bytes(data)
+            except LrError as e:
+                if attempt == attempts - 1:
+                    with lock:
+                        errors[p.id] = str(e)
+                else:
+                    time.sleep(2 * (attempt + 1))
+                continue
+            path.write_bytes(data)
+            with lock:
                 index[p.id] = {"size": size, "changed_at": p.changed_at, "bytes": len(data),
                                "file": p.file, "fetched_at": int(time.time())}
-                if log:
-                    log(f"fetched {p.file or p.id} ({len(data) // 1024} KB)")
-                return
-            except LrError as e:
-                errors[p.id] = str(e)
-                time.sleep(2 * (attempt + 1))
+                save_index()
+            if log:
+                log(f"fetched {p.file or p.id} ({len(data) // 1024} KB)")
+            return
 
     with ThreadPoolExecutor(workers) as ex:
         list(ex.map(fetch, jobs))
-    index_file.write_text(json.dumps(index, indent=2))
+    with lock:
+        save_index()
     return {"downloaded": len(jobs) - len(errors), "skipped": len(photos) - len(jobs), "errors": errors}
