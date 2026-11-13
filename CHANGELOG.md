@@ -1,5 +1,73 @@
 # Changelog
 
+## Unreleased
+
+**Rebuild PDFs made with 0.1.0.** WeasyPrint re-encoded every embedded JPEG in 0.1.0 (a second lossy
+generation on PDF/X-1a, and on PDF/X-4 the source bytes were not kept), and PDF/X-4 tagged Display P3 photos
+as sRGB. Both are fixed; render again to get the intended output.
+
+### Changed
+
+- PDF/X-1a photos are downsampled to 350 dpi at their largest placement by default, inside the single CMYK
+  conversion (one JPEG generation, never upsampled, layout unchanged). A 20-photo A5 book went from 338 MB to
+  133 MB. New `output.max_dpi` sets the target; `output.max_dpi: null` restores full resolution.
+  `output.jpeg_quality` is the other size lever.
+- CMYK JPEGs no longer embed the press profile (the output intent carries it), which saves the size of the
+  profile (often 0.5 MB or more) per photo.
+- A relative `output.icc` path is resolved against the book directory, in `zinegen init`/`zg_init_book` and in
+  render, instead of the working directory. A value is a path only if it contains a separator, starts with
+  `~` or ends in `.icc`/`.icm`; anything else is a profile name looked up in the profile directories, so a
+  file in the book directory cannot shadow an installed profile.
+- Render fails, before writing anything, when `output.icc` is set but cannot be resolved or is not a readable
+  profile (0.1.0 silently wrote a PDF/X-4 without an output intent). With `output.icc` unset on PDF/X-4, render
+  still runs for proofing and reports `NO_OUTPUT_PROFILE`, so `check` is not ok.
+- Render fails, and removes the PDF, when a placed photo is not embedded exactly as prepared.
+- `LOW_DPI`, `BAD_DPI` and `GUTTER_CROSSING` are reported once per spread photo, on the left page, instead of
+  once per page.
+- `photos.json` `keywords` is a list of strings (0.1.0 wrote `[true, …]`). Re-run `init` into a scratch directory
+  and copy `photos.json` over to refresh an old book (see `docs/03-schemas.md`).
+- `zinegen fetch` (and `build`) exits 1 when `book.yaml` references photo ids that are not in Lightroom, and
+  lists them.
+- `zinegen init` prints the absolute path of `book.yaml`; an explicit `--icc` that cannot be resolved (or is not
+  CMYK for `pdf/x-1a`) fails init; an `--album` that is not a 32-hex id fails at once instead of retrying.
+- `zinegen spine` / `zg_spine` reject non-positive pages or caliper, a negative board and unknown bindings.
+- Lightroom errors are printed as `error: …` (exit 2) instead of a traceback; render errors likewise.
+- Trim preset labels corrected: `SIN46` is 신사륙판 and `CROWN` (152×225, size unchanged) is 신국판 size.
+  Preset names are case-insensitive, so `8x10`, `10x8` and `7x7` now resolve.
+
+### Fixed
+
+- `pair` captions sit directly under the two photos instead of in the bottom margin, where they ran into the
+  page number.
+- Photos with an EXIF orientation are placed upright with the right proportions on both standards (layout used
+  the unrotated size). On PDF/X-4 such a photo is rotated and encoded once and reported `ORIENTATION_REENCODED`.
+- MCP tool errors carry their cause (invalid `book.yaml` with the path of each mistake, missing files, steps run
+  out of order, Ghostscript output) instead of a bare "Error executing tool". Messages name `zg_*` tools, not CLI
+  commands, and drop the Lightroom catalog id.
+- The MCP server never writes anything but JSON-RPC to stdout.
+- `zg_init_book` returns the absolute path of `book.yaml`; an existing `book.yaml` (without `force=true`) and an
+  unknown `icc` (or a non-CMYK one for `pdf/x-1a`) are tool errors.
+- `zg_fetch` fetches photos referenced outside the album by id, as `zinegen fetch` did.
+- `zg_album_photos` and `zg_init_book` reject an album name instead of retrying for about 30 s.
+- `zg_check` and `zg_proof` explain a missing or truncated `out/interior.pdf` instead of failing obscurely.
+- Rendition downloads: `errors` lists only photos that failed every retry, `cache/index.json` is written after
+  each download (an interrupted fetch keeps its progress), files are written atomically, and duplicate ids are
+  downloaded once.
+- The MCP initialize response carries the package version.
+
+### Added
+
+- `output.max_dpi` (see above); `report.json` gains `max_dpi` and `images[].source_px`.
+- Issue codes `NO_ROOM` (margins, `gap_mm` or caption leave no room for a photo; the page's photos are not placed),
+  `NO_OUTPUT_PROFILE`, `DPI_ABOVE_NEED` (PDF/X-4 photos far above print resolution, with a `source.size` hint
+  when it is safe) and `ORIENTATION_REENCODED`.
+- Trim presets `SINGUK` (신국판, 152×225) and `CROWN176` (크라운판, 176×248).
+- `zg_proof` returns at most 12 spreads per call and says which spreads were left out and how to request them,
+  and labels each image with its pages.
+- `zg_fetch` returns `outside_album`, `missing` and a `warning` when ids are missing.
+- `zinegen --version`; parameter descriptions and enums (`standard`, `binding`) in the MCP tool schemas.
+- The PDF/X-1a tests run on CI with Ghostscript's CMYK profile.
+
 ## 0.1.0 — 2026-11-08
 
 First public version.

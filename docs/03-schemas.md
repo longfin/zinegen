@@ -24,12 +24,12 @@ Unknown keys are errors. Units are in the key name: `_mm`, `_um`, `_pt`.
 | `page_numbers` | bool | false | not on title/blank/full-bleed pages |
 | `marks` | bool | true | crop + registration marks |
 | `output.standard` | `pdf/x-1a` `pdf/x-4` | pdf/x-1a | |
-| `output.icc` | path or profile name, or null | null | required for x-1a; also the output intent for x-4. A relative path is resolved against the book directory (where book.yaml is), never the working directory; a bare name is also searched in the usual profile directories |
+| `output.icc` | path or profile name, or null | null | required for x-1a; also the output intent for x-4. A value containing `/` or `\`, starting with `~` or ending in `.icc`/`.icm` is a file path; a relative one is resolved against the book directory (where book.yaml is), never the working directory. Any other value is a profile name, searched only in the profile directories (`color.ADOBE_PROFILE_DIRS`) as `<name>`, `<name>.icc`, `<name>.icm` (a path that is not an existing file is looked up there too). Set but unresolvable: render fails |
 | `output.intent` | perceptual / relative-colorimetric / saturation / absolute-colorimetric | perceptual | |
-| `output.jpeg_quality` | int 50–100 | 95 | CMYK conversion only; x-4 embeds source bytes |
+| `output.jpeg_quality` | int 50–100 | 95 | the x-1a CMYK conversion, and the upright copy of an EXIF-rotated photo on x-4 (`ORIENTATION_REENCODED`); x-4 otherwise embeds source bytes |
 | `output.max_dpi` | int 150–2400, or null | 350 | x-1a only: each photo is resampled during its single CMYK conversion so its most demanding placement gets this effective resolution (never upsampled); a photo at most 1.1× above it (`render.RESAMPLE_TOLERANCE`) is converted at its source size. null keeps every source pixel. Below 300 every downsampled image is reported `LOW_DPI` (below 200 `BAD_DPI`). x-4 embeds source bytes |
 | `source.album_id` | 32 hex | – | |
-| `source.size` | 640 / 1280 / 2048 / 2560 / fullsize | fullsize | |
+| `source.size` | string: `"640"` / `"1280"` / `"2048"` / `"2560"` / `fullsize` | fullsize | quote the number in YAML (`size: "2560"`); a bare `2560` is an integer and fails validation |
 | `pages[]` | list of page items | required | see below |
 
 Page items. `photo` is a 32-hex Lightroom asset id; `note` (string) is allowed on every item and ignored.
@@ -70,7 +70,7 @@ Written by `zinegen init`; read by agents when sequencing. Mirrors the fields pr
 `photos` is in the album's own order. `cropped` is the post-crop size reported by Lightroom; the embedded
 rendition's pixel size is authoritative for layout. `keywords` is a list of keyword strings; 0.1.0 wrote
 `[true, …]` instead (the API sends `dc.subject` as `{keyword: true}`). This is a bug fix, not a format change.
-To refresh a 0.1.0 `photos.json` without touching `book.yaml`, run `zinegen init <album> --dir <scratch dir>`
+To refresh a 0.1.0 `photos.json` without touching `book.yaml`, run `zinegen init --album <album id> --dir <scratch dir>`
 and copy its `photos.json` over (`--force` in the book directory would overwrite `book.yaml`).
 
 ## 3. `out/report.json` — render report (version 1)
@@ -129,6 +129,7 @@ they differ only on x-1a when `max_dpi` downsampled the photo. Layout geometry a
 
 - `cache/index.json` (rendition cache sidecar): internal until it is shared with lr-mcp (issue #11).
 - `cache/cmyk/*.json`: conversion sidecar keyed by content hash.
+- `cache/upright/`: upright copies of EXIF-rotated photos for x-4.
 - Proof file naming `proof/spread-NN.png` / `page-NNN.png`, a layout export and a comments file: to be fixed
   together when the review GUI is started.
 
@@ -136,6 +137,8 @@ they differ only on x-1a when `max_dpi` downsampled the photo. Layout geometry a
 
 - v1: initial. Pre-version specs need `version: 1` added and `_file` hints renamed to `note`.
 - v1, added (no version bump): issue code `NO_OUTPUT_PROFILE`.
+- v1, added (no version bump): issue code `NO_ROOM`. Clarified: dpi and gutter issues of a spread photo are
+  raised once, on the verso page (0.1.0 raised them once per page).
 - v1, added (no version bump): `book.yaml` `output.max_dpi`; `report.json` `max_dpi` and `images[].source_px`;
   issue code `DPI_ABOVE_NEED`. Existing x-1a books are now downsampled to 350 dpi by default; set
   `output.max_dpi: null` to keep every source pixel.

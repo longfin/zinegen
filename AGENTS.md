@@ -59,16 +59,26 @@ lib dir automatically. Ghostscript (`gs`) is required for proofs.
 - **PDF/X invariants** (checked by `check.py`): an output intent with an embedded profile, TrimBox and BleedBox
   on every page, CMYK/Gray images only for X-1a, ICC-tagged RGB for X-4, no transparency on X-1a, all fonts
   embedded. Any change to `render.py` or the template must keep `zinegen check` green on both standards.
-- **Never recompress a source JPEG twice.** X-1a converts P3 -> CMYK once (cached in `cache/cmyk/`); X-4 embeds
-  the original bytes. Keep `optimize_images=False` and the DCT passthrough.
+- **Never recompress a source JPEG twice.** X-1a decodes each photo once, applies EXIF orientation, downsamples
+  it to `output.max_dpi`, converts P3 -> CMYK and encodes it once (cached in `cache/cmyk/`); X-4 embeds the
+  original bytes. The one exception is an X-4 photo with an EXIF orientation tag: it is rotated and encoded once
+  (`cache/upright/`) and reported `ORIENTATION_REENCODED`. WeasyPrint must pass the prepared files through
+  untouched: keep `write_pdf(..., jpeg_quality=None, dpi=None, optimize_images=False)` and
+  `image-orientation: none` on the photo `<img>` in the template (without any one of them WeasyPrint re-encodes
+  JPEGs: any `jpeg_quality` re-encodes all, `dpi` those above it, and the default `from-image` every JPEG
+  with an EXIF block, i.e. every Lightroom rendition). `render._verify_images` fails the render when a placed
+  photo's prepared file is not embedded byte for byte.
 - **Lightroom access is read-only** and goes through `lr_mcp.client`. Do not add write calls. Do not print or
   commit anything from `~/.config/lr-mcp/` (tokens, client secret).
 - **ICC profiles and Apple/Adobe fonts are not redistributable.** Only `sRGB2014.icc` (from WeasyPrint) is bundled.
   Resolve press profiles at run time (`color.find_profile`) and prefer OFL fonts (Nanum, Noto, Pretendard) as defaults.
 - Functions that lr-mcp may adopt later live in `lr/compat.py` and must stay importable with only `lr_mcp.client`
   as a dependency, so they can be upstreamed unchanged (lr-mcp issues #9, #10, #11).
-- Tests must not touch the network. `tests/test_render.py` renders synthetic JPEGs through the real pipeline
-  (PDF/X-4 with an RGB output intent); anything that needs Lightroom or a CMYK profile is a manual `build` run.
+- Tests must not touch the network. `tests/test_render.py` renders synthetic JPEGs through the real pipeline on
+  both standards: PDF/X-1a uses any CMYK profile found (`tests/conftest.py`: `ZINEGEN_TEST_CMYK_ICC`, an
+  installed press profile, or Ghostscript's `default_cmyk.icc`) and is skipped without one, except on CI, where
+  `ZINEGEN_REQUIRE_CMYK=1` makes that a failure. `tests/test_server.py` drives the MCP tools in-process with
+  Lightroom mocked. Anything that needs Lightroom is a manual `build` run.
 - **One version, three places.** `pyproject.toml`, `.claude-plugin/plugin.json` and `metadata.version` in
   `skills/zinegen/SKILL.md` must agree (`tests/test_release.py` checks). To release: bump all three, date the
   CHANGELOG entry, commit, `git tag vX.Y.Z && git push --tags`, then `uv build` and `gh release create vX.Y.Z dist/*`. Publishing the GitHub release triggers

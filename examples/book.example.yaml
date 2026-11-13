@@ -11,6 +11,7 @@ fonts: { body: Nanum Myeongjo, caption: Nanum Gothic, title: Nanum Myeongjo }
 output:
   standard: pdf/x-1a            # pdf/x-1a for offset (CMYK), pdf/x-4 for POD (RGB kept)
   icc: JapanColor2001Coated     # profile name found on this machine, or a path to an .icc file
+                                # (a relative path is resolved against the directory of this file)
   intent: perceptual
   max_dpi: 350                  # x-1a: downsample to this dpi at the largest placement (null = keep all pixels);
                                 # below 300 every downsampled photo is reported LOW_DPI

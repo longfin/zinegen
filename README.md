@@ -25,10 +25,12 @@ book.yaml (edited by the agent / you) ─────────┴──render
 - Page geometry is computed in millimetres, not left to CSS: every image placement reports its effective dpi
   and whether it crosses the gutter. Spreads are forced to start on a left-hand page; the page count is padded
   to the binding's multiple.
-- **PDF/X-1a** (offset, 국내 인쇄소): images are converted to CMYK with LittleCMS (perceptual intent, black point
-  compensation) and embedded without a second JPEG generation; text and rules are DeviceCMYK.
-- **PDF/X-4** (POD, Blurb-style services): the original P3 JPEGs are embedded losslessly and tagged with their ICC
-  profile; the output intent is still a CMYK press profile.
+- **PDF/X-1a** (offset, 국내 인쇄소): each photo is converted to CMYK with LittleCMS (perceptual intent, black
+  point compensation) and downsampled to `output.max_dpi` (350 by default) in the same single pass, so the PDF
+  holds exactly one JPEG generation; text and rules are DeviceCMYK.
+- **PDF/X-4** (POD, Blurb-style services): the original P3 JPEGs are embedded byte for byte and tagged with their
+  ICC profile (a photo with an EXIF rotation is the one exception: it is rotated and encoded once); the output
+  intent is still the press profile from `output.icc`.
 - Proof PNGs are composed as spreads so an agent can look at them (`zg_proof` returns images over MCP).
 - A structural self-check (output intent, trim/bleed boxes, colour spaces, transparency, font embedding,
   resolution) runs with pikepdf. It is not a replacement for Acrobat/callas preflight.
@@ -45,17 +47,25 @@ uv tool install zinegen                   # from PyPI; for development: git clon
 zinegen doctor
 ```
 
+`uv tool install` puts `zinegen` in uv's tool directory; if `which zinegen` finds nothing, run
+`uv tool update-shell` and open a new terminal. The agent integrations below start `zinegen mcp` by name, so
+this must work in the shell you start the agent from.
+
 CMYK ICC profiles cannot be redistributed, so zinegen looks for the usual ones on the machine
-(Adobe installs, ColorSync) and otherwise takes a path in `output.icc`. ISO Coated v2 / PSO Coated v3
-can be downloaded free from [ECI](https://www.eci.org/).
+(Adobe installs, ColorSync, `/usr/share/color/icc`) by name, e.g. `output.icc: JapanColor2001Coated`, and
+otherwise takes a path in `output.icc` (a relative path is resolved against the book directory).
+ISO Coated v2 / PSO Coated v3 can be downloaded free from [ECI](https://www.eci.org/).
 
 ## Register with an agent
 
-`zinegen` must be on `PATH` first (`uv tool install`, above). Then pick one:
+**`zinegen` must be on `PATH` first** (`uv tool install zinegen`, above). The plugin and the skill do not
+install it: the plugin's `.mcp.json` only runs `zinegen mcp`, and the server fails to start if the command is
+not found. Then pick one:
 
 ```bash
-# Claude Code: plugin install adds the skill and registers the `zinegen` MCP server in one step
-/plugin install zinegen --marketplace longfin/zinegen
+# Claude Code: the plugin adds the skill and registers the `zinegen` MCP server in one step
+claude plugin marketplace add longfin/zinegen     # the marketplace is named `longfin`
+claude plugin install zinegen@longfin
 
 # Any agent that reads SKILL.md folders (Claude Code, Codex, Cursor, ...): skill only
 npx skills add longfin/zinegen
@@ -89,7 +99,7 @@ MCP tools: `zg_spec_help`, `zg_list_albums`, `zg_album_photos`, `zg_init_book`, 
 books/<name>/
   book.yaml      the spec (the only thing to edit)
   photos.json    photo metadata from Lightroom
-  cache/         renditions, index.json, cmyk/ conversions   (ignored by git)
+  cache/         renditions, index.json, cmyk/ (x-1a conversions), upright/ (x-4 rotated copies)
   out/           interior.pdf, interior.html, report.json, check.json
   proof/         page-NNN.png, spread-NN.png
 ```
