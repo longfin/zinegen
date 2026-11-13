@@ -10,6 +10,8 @@ from pathlib import Path
 
 from . import presets, spec
 
+STANDARDS = ("pdf/x-1a", "pdf/x-4")
+
 
 def log(msg):
     print(msg, file=sys.stderr)
@@ -73,44 +75,98 @@ def _book(path) -> spec.Book:
     return spec.load(p)
 
 
-def cmd_init(a):
-    from .lr import compat
-    info = compat.album_info(a.album)
-    photos = compat.album_assets(a.album)
-    name = re.sub(r"[^\w가-힣-]+", "_", info["name"] or a.album).strip("_")
-    root = Path(a.dir) if a.dir else Path("books") / name
-    root.mkdir(parents=True, exist_ok=True)
-    out = root / "book.yaml"
-    if out.exists() and not a.force:
-        log(f"{out} exists; use --force to overwrite")
-        return 1
+ALBUM_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+def check_album_id(album_id: str) -> str:
+    """Fail fast on something that is not a Lightroom album id (a name would be retried for ~30 s)."""
+    if not ALBUM_ID.match(album_id or ""):
+        raise ValueError(f"{album_id!r} is not a Lightroom album id (32 lowercase hex characters); "
+                         "look the id up with `zinegen albums`")
+    return album_id
+
+
+def init_book(album: str, dir: str | None = None, standard: str = "pdf/x-1a", icc: str | None = None,
+              force: bool = False, log=None) -> dict:
+    """Draft book.yaml and photos.json for an album. Writes nothing to stdout.
+
+    Returns {"path", "photos", "sort", "icc", "warnings"}; `path` is absolute.
+    Raises ValueError for a bad standard/icc/album id, FileExistsError when book.yaml exists and not `force`.
+    """
     from . import color
-    icc = a.icc or next((p for p in ("JapanColor2001Coated", "CoatedFOGRA39") if color.find_profile(p)), None)
-    s = spec.skeleton(info, photos, a.standard, icc)
+    from .lr import compat
+    if standard not in STANDARDS:
+        raise ValueError(f"standard must be one of {', '.join(STANDARDS)}, not {standard!r}")
+    if icc:
+        prof = color.find_profile(icc)
+        if not prof:
+            raise ValueError(f"ICC profile {icc!r} not found (a file path, or a name searched in "
+                             f"{', '.join(str(d) for d in color.ADOBE_PROFILE_DIRS)})")
+        if standard == "pdf/x-1a" and color.profile_components(prof) != ["c", "m", "y", "k"]:
+            raise ValueError(f"pdf/x-1a needs a CMYK output profile; {prof.name} is not CMYK")
+    check_album_id(album)
+    info = compat.album_info(album)
+    photos = compat.album_assets(album)
+    name = re.sub(r"[^\w가-힣-]+", "_", info["name"] or album).strip("_")
+    root = (Path(dir).expanduser() if dir else Path("books") / name).resolve()
+    out = root / "book.yaml"
+    if out.exists() and not force:
+        raise FileExistsError(f"{out} already exists")
+    root.mkdir(parents=True, exist_ok=True)
+    warnings = []
+    icc = icc or next((p for p in ("JapanColor2001Coated", "CoatedFOGRA39") if color.find_profile(p)), None)
+    if standard == "pdf/x-1a" and not icc:
+        warnings.append("no CMYK press profile found; set output.icc in book.yaml (path or profile name) before rendering")
+    s = spec.skeleton(info, photos, standard, icc)
     spec.dump(s, out)
     (root / "photos.json").write_text(json.dumps(compat.photos_document(info, photos), indent=1, ensure_ascii=False))
-    log(f"wrote {out} with {len(photos)} photos (album order: {info['sort']}); photo metadata in {root / 'photos.json'}")
-    print(out)
+    if log:
+        log(f"wrote {out} with {len(photos)} photos (album order: {info['sort']}); photo metadata in {root / 'photos.json'}")
+    return {"path": out, "photos": len(photos), "sort": info["sort"], "icc": icc, "warnings": warnings}
+
+
+def cmd_init(a):
+    try:
+        res = init_book(a.album, a.dir, a.standard, a.icc, a.force, log=log)
+    except FileExistsError as e:
+        log(f"{e}; use --force to overwrite")
+        return 1
+    for w in res["warnings"]:
+        log(f"warning: {w}")
+    print(res["path"])
     return 0
 
 
-def cmd_fetch(a):
+def fetch_book(book: spec.Book, force: bool = False, log=None) -> dict:
+    """Download the renditions book.yaml references. Writes nothing to stdout.
+
+    Photos outside the album are looked up by id. Returns the `fetch_renditions` summary plus
+    `outside_album` (found by id, not in the album) and `missing` (not found in the catalog at all).
+    """
     from .lr import compat
-    book = _book(a.book)
     album = book.source.get("album_id")
-    photos = compat.album_assets(album) if album else []
-    wanted = set(book.photo_ids())
-    photos = [p for p in photos if p.id in wanted] if album else []
-    missing = wanted - {p.id for p in photos}
-    if missing:
-        # photos referenced outside the album: fetch by id
+    wanted = book.photo_ids()
+    photos = [p for p in compat.album_assets(album) if p.id in set(wanted)] if album else []
+    outside = [i for i in wanted if i not in {p.id for p in photos}]
+    if outside:
         from lr_mcp import client as lr
-        ids = ",".join(sorted(missing))
-        for asset in lr.get_json(lr.catalog_path() + f"assets?asset_ids={ids}").get("resources", []):
-            photos.append(compat._photo(asset))
-    res = compat.fetch_renditions(photos, book.cache_dir, book.source.get("size", "fullsize"), a.force, log=log)
+        for i in range(0, len(outside), 100):
+            ids = ",".join(outside[i:i + 100])
+            for asset in lr.get_json(lr.catalog_path() + f"assets?asset_ids={ids}").get("resources", []):
+                photos.append(compat._photo(asset))
+    found = {p.id for p in photos}
+    res = compat.fetch_renditions(photos, book.cache_dir, book.source.get("size", "fullsize"), force, log=log)
+    res["outside_album"] = [i for i in outside if i in found]
+    res["missing"] = [i for i in wanted if i not in found]
+    return res
+
+
+def cmd_fetch(a):
+    res = fetch_book(_book(a.book), a.force, log=log)
     log(json.dumps(res, ensure_ascii=False))
-    return 0 if not res["errors"] else 1
+    if res["missing"]:
+        log(f"error: {len(res['missing'])} photo id(s) in book.yaml not found in Lightroom: {', '.join(res['missing'])}")
+    return 0 if not (res["errors"] or res["missing"]) else 1
 
 
 def cmd_render(a):
@@ -147,8 +203,21 @@ def cmd_build(a):
     return cmd_check(a)
 
 
+def spine(pages: int, caliper_um: float, binding: str = "perfect", board_mm: float = 2.0) -> float:
+    """Validated spine width in mm; shared by `zinegen spine` and zg_spine."""
+    if pages <= 0:
+        raise ValueError(f"pages must be greater than 0, not {pages}")
+    if caliper_um <= 0:
+        raise ValueError(f"caliper must be greater than 0 µm, not {caliper_um}")
+    if board_mm < 0:
+        raise ValueError(f"board must be 0 mm or more, not {board_mm}")
+    if binding not in presets.BINDINGS:
+        raise ValueError(f"binding must be one of {', '.join(presets.BINDINGS)}, not {binding!r}")
+    return presets.spine_mm(pages, caliper_um, binding, board_mm)
+
+
 def cmd_spine(a):
-    print(f"{presets.spine_mm(a.pages, a.caliper, a.binding, a.board)} mm")
+    print(f"{spine(a.pages, a.caliper, a.binding, a.board)} mm")
 
 
 def cmd_mcp(_):
@@ -156,8 +225,18 @@ def cmd_mcp(_):
     serve()
 
 
+def version() -> str:
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _v
+    try:
+        return _v("zinegen")
+    except PackageNotFoundError:
+        return "unknown"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="zinegen", description=__doc__)
+    ap.add_argument("--version", action="version", version=f"zinegen {version()}")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("doctor").set_defaults(f=cmd_doctor)
     sub.add_parser("presets").set_defaults(f=cmd_presets)
@@ -167,7 +246,7 @@ def main(argv=None):
     p = sub.add_parser("init", help="draft book.yaml from a Lightroom album")
     p.add_argument("--album", required=True)
     p.add_argument("--dir")
-    p.add_argument("--standard", default="pdf/x-1a", choices=["pdf/x-1a", "pdf/x-4"])
+    p.add_argument("--standard", default="pdf/x-1a", choices=STANDARDS)
     p.add_argument("--icc")
     p.add_argument("--force", action="store_true")
     p.set_defaults(f=cmd_init)
@@ -186,13 +265,14 @@ def main(argv=None):
     p.add_argument("--pages", type=int, required=True)
     p.add_argument("--caliper", type=float, required=True, help="paper caliper in µm")
     p.add_argument("--binding", default="perfect", choices=list(presets.BINDINGS))
-    p.add_argument("--board", type=float, default=2.0)
+    p.add_argument("--board", type=float, default=2.0, help="hardcover board thickness in mm")
     p.set_defaults(f=cmd_spine)
     sub.add_parser("mcp", help="run the MCP server (stdio)").set_defaults(f=cmd_mcp)
     a = ap.parse_args(argv)
+    from lr_mcp.client import LrError
     try:
         return a.f(a) or 0
-    except (ValueError, FileNotFoundError, spec.SpecError) as e:
+    except (ValueError, FileNotFoundError, LrError) as e:
         log(f"error: {e}")
         return 2
 
