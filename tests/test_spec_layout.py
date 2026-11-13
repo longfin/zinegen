@@ -118,6 +118,20 @@ def test_pair_without_caption_uses_full_box(tmp_path):
     assert abs(pl.images[1].clip[1] + pl.images[1].clip[3] - (210 - 16)) < 1e-9
 
 
+@pytest.mark.parametrize("template", ["spread-full", "spread-margin"])
+def test_gutter_crossing_reported_once_per_photo(tmp_path, template):
+    """Issue #11: a spread photo is placed on two pages but crosses the gutter once."""
+    p = write(tmp_path, [{"template": "title", "title": "x"}, {"template": template, "photo": A, "caption": "c"}
+                         if template == "spread-margin" else {"template": template, "photo": A}])
+    book = spec.load(p)
+    pages = layout.layout(book, {A: (6000, 4000)})
+    rep = layout.report(book, pages)
+    crossings = [i for i in rep["issues"] if i["code"] == "GUTTER_CROSSING"]
+    assert crossings == [{"code": "GUTTER_CROSSING", "level": "warning", "message": crossings[0]["message"], "page": 2, "photo": A}]
+    assert [i["page"] for i in rep["images"]] == [2, 3]     # images[] still lists the spread once per page
+    assert all(i["crossing_gutter"] for i in rep["images"])
+
+
 @pytest.mark.parametrize("pages, fragment", [
     ([{"template": "margin"}], "pages[0] (margin): 'photo' is a required property"),
     ([{"template": "pair", "photos": [A]}], "pages[0] (pair) photos"),

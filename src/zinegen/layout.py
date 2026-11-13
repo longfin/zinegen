@@ -24,6 +24,7 @@ class ImageEl:
     clip: tuple[float, float, float, float]   # x, y, w, h in page mm (may extend into bleed)
     px: tuple[int, int]
     crossing_gutter: bool = False
+    spread: int | None = None   # verso page index when one placement spans two pages
 
     @property
     def dpi(self) -> float:
@@ -165,8 +166,8 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
                 box = (lo, t, 2 * W - 2 * lo, H - t - b)
                 x, y, w, h = _contain(box, px)
             crossing = x < W < x + w
-            left_pl.images.append(ImageEl(d["photo"], x, y, w, h, full, px, crossing))
-            right_pl.images.append(ImageEl(d["photo"], x - W, y, w, h, full, px, crossing))
+            left_pl.images.append(ImageEl(d["photo"], x, y, w, h, full, px, crossing, p.index))
+            right_pl.images.append(ImageEl(d["photo"], x - W, y, w, h, full, px, crossing, p.index))
             caption = str(d.get("caption") or "").strip()
             if caption and p.template == "spread-margin":
                 left, t, bw, bh = page_box(p.index + 1)
@@ -181,7 +182,7 @@ REPORT_VERSION = 1
 def report(book: Book, pages: list[PageLayout]) -> dict:
     """report.json (version 1): placed images with effective resolution, plus structured issues."""
     items, issues = [], list(book.issues)
-    seen = set()
+    seen, crossed = set(), set()
     for pl in pages:
         for im in pl.images:
             key = (pl.index, im.photo)
@@ -195,7 +196,10 @@ def report(book: Book, pages: list[PageLayout]) -> dict:
             if level != "ok":
                 issues.append(Issue("BAD_DPI" if level == "bad" else "LOW_DPI",
                                     f"{dpi} dpi at {im.w:.0f}×{im.h:.0f} mm", page=pl.index, photo=im.photo))
-            if im.crossing_gutter and not BINDINGS[book.binding]["crossing_ok"]:
+            # one issue per crossing photo, on the verso page of the spread (images[] keeps one entry per page)
+            crossing_key = (im.spread if im.spread is not None else pl.index, im.photo)
+            if im.crossing_gutter and not BINDINGS[book.binding]["crossing_ok"] and crossing_key not in crossed:
+                crossed.add(crossing_key)
                 issues.append(Issue("GUTTER_CROSSING", f"spread image crosses the gutter; {book.binding} binding hides ~6-8 mm at the spine",
                                     page=pl.index, photo=im.photo))
     return {"version": REPORT_VERSION, "title": book.title, "pages": book.page_count,
