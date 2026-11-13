@@ -6,6 +6,9 @@ Everything here is read-only against the Partner API.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -51,6 +54,43 @@ def _latest(d, key):
     return v.get(key)
 
 
+def _keywords(subject) -> list[str]:
+    """Keyword strings from `xmp.dc.subject`.
+
+    The Partner API sends the bag as a set, `{"keyword": true, ...}` (checked against a real catalog).
+    An `{index: value}` dict or a plain list is also accepted, in case another endpoint serialises the
+    bag that way. Per dict entry: an integer key (or a decimal-digit string) with a string value is an
+    index entry and yields the value; any other string key with a truthy value yields the key. Index
+    entries come first, in index order. Non-string results are dropped, duplicates removed; never raises.
+    """
+    if isinstance(subject, str):
+        return [subject]
+    if isinstance(subject, list):
+        return list(dict.fromkeys(k for k in subject if isinstance(k, str)))
+    if not isinstance(subject, dict):
+        return []
+    indexed, named = [], []
+    for k, v in subject.items():
+        i = _index(k)
+        if i is not None and isinstance(v, str):
+            indexed.append((i, v))
+        elif isinstance(k, str) and v:
+            named.append(k)
+    indexed.sort(key=lambda iv: iv[0])
+    return list(dict.fromkeys([v for _, v in indexed] + named))
+
+
+def _index(k) -> int | None:
+    if isinstance(k, int) and not isinstance(k, bool):
+        return k
+    if isinstance(k, str) and k.isdecimal():
+        try:
+            return int(k)
+        except ValueError:
+            return None
+    return None
+
+
 def _photo(album_asset: dict) -> Photo:
     a = album_asset.get("asset", album_asset)
     p = a.get("payload", {})
@@ -59,9 +99,6 @@ def _photo(album_asset: dict) -> Photo:
     tiff = xmp.get("tiff", {})
     imp = p.get("importSource", {})
     dev = p.get("develop", {})
-    subject = dc.get("subject")
-    if isinstance(subject, dict):  # xmp bags sometimes arrive as {index: value}
-        subject = list(subject.values())
     return Photo(
         id=a["id"],
         file=imp.get("fileName"),
@@ -69,7 +106,7 @@ def _photo(album_asset: dict) -> Photo:
         order=album_asset.get("payload", {}).get("order") if "asset" in album_asset else None,
         title=dc.get("title") if isinstance(dc.get("title"), str) else None,
         caption=dc.get("description") if isinstance(dc.get("description"), str) else None,
-        keywords=list(subject) if isinstance(subject, list) else [],
+        keywords=_keywords(dc.get("subject")),
         rating=_latest(p.get("ratings"), "rating"),
         flag=_latest(p.get("reviews"), "flag"),
         camera=" ".join(filter(None, [tiff.get("Make"), tiff.get("Model")])) or None,
@@ -126,7 +163,8 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
     index_file = dest / "index.json"
     index = json.loads(index_file.read_text()) if index_file.exists() else {}
     jobs = []
-    for p in photos:
+    unique = list({p.id: p for p in photos}.values())  # one download (and one writer) per asset id
+    for p in unique:
         path = dest / f"{p.id}.jpg"
         entry = index.get(p.id)
         if (not force and entry and path.exists() and entry.get("size") == size
@@ -134,23 +172,53 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
             continue
         jobs.append((p, path))
     errors = {}
+    lock = threading.Lock()
+
+    def save_index():
+        # Called under `lock` after every download, so an interrupted run keeps what it already fetched.
+        _atomic_write(index_file, json.dumps(index, indent=2).encode())
 
     def fetch(job):
         p, path = job
-        for attempt in range(3):
+        attempts = 3
+        for attempt in range(attempts):
             try:
                 data = lr.rendition(p.id, size)
-                path.write_bytes(data)
+            except LrError as e:
+                if attempt == attempts - 1:
+                    with lock:
+                        errors[p.id] = str(e)
+                else:
+                    time.sleep(2 * (attempt + 1))
+                continue
+            _atomic_write(path, data)  # never leave a truncated JPEG under the final name
+            with lock:
                 index[p.id] = {"size": size, "changed_at": p.changed_at, "bytes": len(data),
                                "file": p.file, "fetched_at": int(time.time())}
-                if log:
-                    log(f"fetched {p.file or p.id} ({len(data) // 1024} KB)")
-                return
-            except LrError as e:
-                errors[p.id] = str(e)
-                time.sleep(2 * (attempt + 1))
+                save_index()
+            if log:
+                log(f"fetched {p.file or p.id} ({len(data) // 1024} KB)")
+            return
 
     with ThreadPoolExecutor(workers) as ex:
         list(ex.map(fetch, jobs))
-    index_file.write_text(json.dumps(index, indent=2))
-    return {"downloaded": len(jobs) - len(errors), "skipped": len(photos) - len(jobs), "errors": errors}
+    with lock:
+        save_index()
+    return {"downloaded": len(jobs) - len(errors), "skipped": len(unique) - len(jobs), "errors": errors}
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write via a temp file unique to this writer, then rename over `path`.
+
+    Concurrent writers of the same path (two threads, or the CLI and the MCP server fetching one book)
+    each get their own temp name, so the last rename wins and none fails. The temp file is removed if
+    the write or the rename fails.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".part")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        Path(tmp).replace(path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise

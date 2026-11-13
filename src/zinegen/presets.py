@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 # name -> (width, height, note)
+# Keys and sizes are part of the frozen book.yaml format (docs/03-schemas.md): never rename a key or change
+# its size; add a new key instead. Korean names follow common trade usage, not one printer's size table.
 TRIM_PRESETS: dict[str, tuple[float, float, str]] = {
     "A4": (210, 297, "ISO A4 portrait"),
     "A4L": (297, 210, "ISO A4 landscape"),
@@ -11,13 +13,18 @@ TRIM_PRESETS: dict[str, tuple[float, float, str]] = {
     "B5K": (182, 257, "JIS B5 (국내 B5 단행본)"),
     "SQ210": (210, 210, "square 210"),
     "SQ180": (180, 180, "square 180"),
-    "46": (127, 188, "46판 (국내 단행본)"),
-    "SIN46": (128, 188, "신국판"),
-    "CROWN": (152, 225, "크라운판"),
+    "46": (127, 188, "사륙판 (46판)"),
+    "SIN46": (128, 188, "신사륙판 (신46판)"),
+    "SINGUK": (152, 225, "신국판"),
+    "CROWN": (152, 225, "신국판 크기. 키는 호환용으로 유지; 크라운판은 CROWN176"),
+    "CROWN176": (176, 248, "크라운판"),
     "8x10": (203.2, 254, "8×10 in portrait"),
     "10x8": (254, 203.2, "10×8 in landscape"),
     "7x7": (177.8, 177.8, "7×7 in square"),
 }
+
+# Case-insensitive lookup; "8x10" etc. have a lowercase x, so upper-casing the input alone does not find them.
+_PRESET_KEYS = {k.upper(): k for k in TRIM_PRESETS}
 
 BINDINGS = {
     # extra inside margin on top of the base inside margin, and whether spreads can cross the gutter safely
@@ -37,8 +44,8 @@ def resolve_trim(trim: dict | str) -> tuple[float, float]:
     if isinstance(trim, str):
         trim = {"preset": trim}
     if "preset" in trim:
-        key = str(trim["preset"]).upper()
-        if key not in TRIM_PRESETS:
+        key = _PRESET_KEYS.get(str(trim["preset"]).upper())
+        if key is None:
             raise ValueError(f"unknown trim preset {trim['preset']!r}; known: {', '.join(TRIM_PRESETS)}")
         w, h, _ = TRIM_PRESETS[key]
         return float(w), float(h)
