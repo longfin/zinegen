@@ -27,7 +27,7 @@ Unknown keys are errors. Units are in the key name: `_mm`, `_um`, `_pt`.
 | `output.icc` | path or profile name, or null | null | required for x-1a; also the output intent for x-4 |
 | `output.intent` | perceptual / relative-colorimetric / saturation / absolute-colorimetric | perceptual | |
 | `output.jpeg_quality` | int 50–100 | 95 | CMYK conversion only; x-4 embeds source bytes |
-| `output.max_dpi` | int 150–2400, or null | 350 | x-1a only: each photo is resampled during its single CMYK conversion so its most demanding placement gets this effective resolution (never upsampled); null keeps every source pixel. x-4 embeds source bytes |
+| `output.max_dpi` | int 150–2400, or null | 350 | x-1a only: each photo is resampled during its single CMYK conversion so its most demanding placement gets this effective resolution (never upsampled); a photo at most 1.1× above it (`render.RESAMPLE_TOLERANCE`) is converted at its source size. null keeps every source pixel. Below 300 every downsampled image is reported `LOW_DPI` (below 200 `BAD_DPI`). x-4 embeds source bytes |
 | `source.album_id` | 32 hex | – | |
 | `source.size` | 640 / 1280 / 2048 / 2560 / fullsize | fullsize | |
 | `pages[]` | list of page items | required | see below |
@@ -117,7 +117,7 @@ they differ only on x-1a when `max_dpi` downsampled the photo. Layout geometry a
 | `GUTTER_CROSSING` | warning | layout (perfect/hardcover only) |
 | `NO_ROOM` | error | layout (margins, `gap_mm` or caption leave a photo box under 5 mm; photos not placed) |
 | `NO_OUTPUT_PROFILE` | error | render: x-4 with `output.icc` unset (a set but unresolvable profile fails the render instead) |
-| `DPI_ABOVE_NEED` | info | render: x-4 images above 1.5 × `output.max_dpi` (default 350); x-4 embeds source bytes unchanged |
+| `DPI_ABOVE_NEED` | info | render: x-4 placements above 1.5 × `output.max_dpi` (default 350); x-4 embeds source bytes unchanged. Suggests a smaller `source.size` only if every placement stays ≥ 300 dpi with it |
 | `NO_OUTPUT_INTENT`, `NO_DEST_PROFILE`, `NO_PDFX_VERSION`, `PDF_VERSION` | error | check |
 | `NO_TRIMBOX`, `TRIMBOX_SIZE`, `BLEED_SMALL` | error | check |
 | `NO_BLEEDBOX` | warning | check |

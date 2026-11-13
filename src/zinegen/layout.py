@@ -96,7 +96,8 @@ def _contain(box: tuple[float, float, float, float], px: tuple[int, int], align=
 
 
 def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
-    """`sizes` maps photo id -> (width_px, height_px) of the file that will be embedded."""
+    """`sizes` maps photo id -> (width_px, height_px) of the source rendition. Geometry depends only on these
+    (their aspect ratio); `render` may embed a downsampled file and sets `ImageEl.px` to its size afterwards."""
     W, H, B = book.trim_w, book.trim_h, book.bleed
     full = (-B, -B, W + 2 * B, H + 2 * B)
     cap_pt = float(book.type["caption_pt"])

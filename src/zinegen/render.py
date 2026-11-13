@@ -16,6 +16,12 @@ from .issues import Issue
 from .spec import DEFAULT_MAX_DPI, Book
 
 STANDARDS = {"pdf/x-1a": "pdf/x-1a", "pdf/x-4": "pdf/x-4"}
+# A photo whose most demanding placement is at most this factor above output.max_dpi is converted without
+# resampling: a Lanczos pass for a few percent of bytes is not worth the softening.
+RESAMPLE_TOLERANCE = 1.1
+# Lightroom rendition sizes below fullsize (long edge, px), for the DPI_ABOVE_NEED hint.
+SOURCE_SIZES = (2560, 2048, 1280, 640)
+PRINT_DPI = 300             # LOW_DPI threshold in layout.report
 
 
 def _setup_dyld():
@@ -89,6 +95,7 @@ def target_sizes(pages: list[_layout.PageLayout], sizes: dict[str, tuple[int, in
     `pages` must be laid out with the source `sizes`. A cover placement's `w` is the full scaled image (the
     cropped part included), so `px / (w / 25.4)` is the effective resolution of every visible pixel. A photo
     used more than once is sized for its largest placement. Never upsamples; rounds up so the target holds.
+    Photos at most RESAMPLE_TOLERANCE above the target keep their source size.
     """
     if not dpi:
         return dict(sizes)
@@ -100,7 +107,7 @@ def target_sizes(pages: list[_layout.PageLayout], sizes: dict[str, tuple[int, in
     out = {}
     for pid, (w, h) in sizes.items():
         s = need.get(pid, 1.0)
-        out[pid] = (w, h) if s >= 1 else (min(w, math.ceil(w * s - 1e-9)), min(h, math.ceil(h * s - 1e-9)))
+        out[pid] = (w, h) if s * RESAMPLE_TOLERANCE >= 1 else (min(w, math.ceil(w * s - 1e-9)), min(h, math.ceil(h * s - 1e-9)))
     return out
 
 
@@ -156,7 +163,7 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     rep["max_dpi"] = max_dpi(book) if book.output["standard"] == "pdf/x-1a" else None
     for item in rep["images"]:
         item["source_px"] = list(src_sizes[item["photo"]])
-    rep["issues"] += [i.to_dict() for i in _render_issues(book, rep, icc)]
+    rep["issues"] += [i.to_dict() for i in _render_issues(book, pages, icc)]
     env = jinja2.Environment(loader=jinja2.PackageLoader("zinegen", "templates"), autoescape=True)
     tpl = env.get_template("book.html.j2")
     icc_uri = Path(cinfo["icc"]).resolve().as_uri() if cinfo["icc"] else None
@@ -175,6 +182,7 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     # and dpi thumbnails (and re-encodes) images above it. Resolution is decided once, in prepare_images.
     doc.write_pdf(pdf_path, pdf_variant=std, output_intent="--press" if icc_uri else None,
                   jpeg_quality=None, dpi=None, optimize_images=False)
+    _verify_images(pdf_path, {im.photo: files[im.photo] for pl in pages for im in pl.images})
     postprocess(pdf_path, book)
     rep["pdf"] = str(pdf_path)
     rep["html"] = str(html_path)
@@ -184,20 +192,71 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     return rep
 
 
-def _render_issues(book: Book, rep: dict, icc: Path | None) -> list[Issue]:
+def _render_issues(book: Book, pages: list[_layout.PageLayout], icc: Path | None) -> list[Issue]:
     issues = []
     if icc is None:
         issues.append(Issue("NO_OUTPUT_PROFILE", "output.icc is not set, so the PDF has no output intent and is not "
                             "valid PDF/X-4; fine for proofs, not for print. Set output.icc to the printer's profile."))
-    target = max_dpi(book) or DEFAULT_MAX_DPI
     if book.output["standard"] == "pdf/x-4":
-        high = [i for i in rep["images"] if i["dpi"] > target * 1.5]
-        if high:
-            issues.append(Issue("DPI_ABOVE_NEED", f"{len(high)} of {len(rep['images'])} placed images are above "
-                                f"{round(target * 1.5)} dpi (max {max(i['dpi'] for i in high)}); PDF/X-4 embeds the "
-                                "source JPEGs unchanged, so the file is larger than print needs. Lower source.size "
-                                "to shrink it."))
+        issues += _dpi_above_need(book, pages)
     return issues
+
+
+def _dpi_above_need(book: Book, pages: list[_layout.PageLayout]) -> list[Issue]:
+    """One info issue when X-4 placements are far above what print needs (X-4 never resamples).
+
+    Suggests a smaller `source.size` only when every placement would still reach PRINT_DPI with it, so the
+    advice can never lead into LOW_DPI."""
+    target = max_dpi(book) or DEFAULT_MAX_DPI
+    placements: dict[tuple[int, str], _layout.ImageEl] = {}
+    for pl in pages:
+        for im in pl.images:            # a spread photo is one placement (two page entries)
+            placements.setdefault((im.spread if im.spread is not None else pl.index, im.photo), im)
+    high = [im for im in placements.values() if im.dpi > target * 1.5]
+    if not high:
+        return []
+    msg = (f"{len(high)} of {len(placements)} placements are above {round(target * 1.5)} dpi "
+           f"(max {round(max(im.dpi for im in high))}); PDF/X-4 embeds the source JPEGs unchanged, so the file is "
+           "larger than print needs.")
+    current = str(book.source.get("size", "fullsize"))
+    current_px = float("inf") if current == "fullsize" else int(current)
+
+    def dpi_at(im, long_edge):
+        return im.dpi * min(1.0, long_edge / max(im.px))
+
+    fits = [s for s in SOURCE_SIZES
+            if s < current_px and all(dpi_at(im, s) >= PRINT_DPI for im in placements.values())]
+    if fits:
+        s = min(fits)
+        low = min(dpi_at(im, s) for im in placements.values())
+        msg += f" source.size: {s} would keep every placement at {int(low)} dpi or more and shrink it."
+    return [Issue("DPI_ABOVE_NEED", msg)]
+
+
+def _verify_images(pdf_path: Path, expected: dict[str, Path]):
+    """Fail when a placed photo is not in the PDF. WeasyPrint only logs a warning for an image it cannot
+    load (e.g. a cache file removed by a concurrent render), which would silently drop a photo. Images are
+    passed through byte for byte, so each expected file must appear as an image stream."""
+    import hashlib
+
+    import pikepdf
+
+    with pikepdf.open(pdf_path) as pdf:
+        embedded = {hashlib.sha1(x.read_raw_bytes()).hexdigest()
+                    for page in pdf.pages for x in page.images.values()}
+    missing = []
+    for pid, f in expected.items():
+        try:
+            ok = hashlib.sha1(Path(f).read_bytes()).hexdigest() in embedded
+        except OSError:
+            ok = False
+        if not ok:
+            missing.append(pid)
+    if missing:
+        pdf_path.unlink(missing_ok=True)
+        raise RuntimeError(f"{len(missing)} placed photo(s) missing from the PDF ({', '.join(sorted(missing))}); "
+                           "the image file vanished or changed during the render (another render of this book "
+                           "running?). Render again.")
 
 
 def postprocess(pdf_path: Path, book: Book):
