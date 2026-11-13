@@ -90,10 +90,11 @@ Claude Code. The plugin brings the skill and the `zinegen` MCP server together; 
 claude mcp add lightroom -s user -- "$(which lr-mcp)"
 ```
 
-then inside Claude Code:
+then install the plugin (the repository is also a marketplace named `longfin`):
 
-```
-/plugin install zinegen --marketplace longfin/zinegen
+```bash
+claude plugin marketplace add longfin/zinegen     # the marketplace is named `longfin`
+claude plugin install zinegen@longfin
 ```
 
 Codex:

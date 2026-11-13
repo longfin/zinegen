@@ -58,7 +58,7 @@ as sRGB. Both are fixed; render again to get the intended output.
 ### Added
 
 - `output.max_dpi` (see above); `report.json` gains `max_dpi` and `images[].source_px`.
-- Issue codes `NO_ROOM` (margins, `gap_mm` or caption leave no room for a photo; nothing is placed on that page),
+- Issue codes `NO_ROOM` (margins, `gap_mm` or caption leave no room for a photo; the page's photos are not placed),
   `NO_OUTPUT_PROFILE`, `DPI_ABOVE_NEED` (PDF/X-4 photos far above print resolution, with a `source.size` hint
   when it is safe) and `ORIENTATION_REENCODED`.
 - Trim presets `SINGUK` (신국판, 152×225) and `CROWN176` (크라운판, 176×248).

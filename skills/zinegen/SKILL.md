@@ -57,14 +57,16 @@ order, an unknown album id or ICC profile). Read the message and fix the cause r
 5. **Fetch.** `zg_fetch` downloads the renditions into `cache/`. The first full-size download takes a few
    seconds per photo (about 140 s for 20 photos in a test) and reports no progress until it returns, so tell
    the user before a large fetch. Later runs skip unchanged photos, and an interrupted fetch keeps what it
-   finished. `source.size` (`fullsize` default, or `2560`, `2048`, `1280`, `640` px on the long edge) sets the
-   rendition size: keep `fullsize` for offset; a smaller size downloads faster and is enough for small
+   finished. `source.size` (`fullsize` default, or `"2560"`, `"2048"`, `"1280"`, `"640"` px on the long edge)
+   sets the rendition size; it is a string, so quote the number in YAML (`size: "2560"`; a bare `2560` fails
+   validation): keep `fullsize` for offset; a smaller size downloads faster and is enough for small
    placements (check the dpi in the report). Changing it downloads everything again. The result lists
    `downloaded`, `skipped`, `errors`, `outside_album` (found by id outside the album) and `missing` (not in
    the catalog at all, with a `warning`): fix `missing` ids in `book.yaml` before rendering.
 6. **Render and look.** `zg_render` → `zg_proof`. `zg_proof` returns at most 12 spreads per call; its first
-   text block says how many spreads the book has, which ones were not shown and the exact `spreads=[...]` call
-   for the rest. Spread 1 is page 1; spread n is pages 2n-2 and 2n-1; each image is labelled with its pages.
+   text block says how many spreads the book has and lists every spread not shown, with a `spreads=[...]` call
+   for the next batch of up to 12. A call with explicit `spreads` does not repeat that list, so for a book over
+   24 spreads keep track yourself and request the rest in batches of up to 12. Spread 1 is page 1; spread n is pages 2n-2 and 2n-1; each image is labelled with its pages.
    The default `dpi` 40 is enough for layout but too small to read captions or the colophon; use `dpi` 60–90
    for those, on selected `spreads`. Look at every spread. Critique like an editor: pacing (rhythm of
    full-bleed vs margin pages), facing-page relationships, horizon alignment, repeated motifs, dead white
@@ -89,7 +91,7 @@ Each issue has `code`, `level` (`info` | `warning` | `error`), `message` and, wh
 | `PAGES_PADDED` | info | blanks added to reach the binding's page multiple |
 | `LOW_DPI` / `BAD_DPI` | warning / error | effective resolution below 300 / 200 dpi |
 | `GUTTER_CROSSING` | warning | a spread photo crosses the gutter on `perfect`/`hardcover` |
-| `NO_ROOM` | error | margins, `gap_mm` or the caption leave a photo box under 5 mm; nothing placed on that page |
+| `NO_ROOM` | error | margins, `gap_mm` or the caption leave a photo box under 5 mm; the page's photos are not placed |
 | `NO_OUTPUT_PROFILE` | error | x-4 with `output.icc` unset: no output intent, fine for proofs, not for print |
 | `DPI_ABOVE_NEED` | info | x-4 photos far above print resolution; may suggest a smaller `source.size` |
 | `ORIENTATION_REENCODED` | warning | x-4 photo with an EXIF rotation, re-encoded once to embed it upright |

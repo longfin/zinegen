@@ -63,8 +63,9 @@ install it: the plugin's `.mcp.json` only runs `zinegen mcp`, and the server fai
 not found. Then pick one:
 
 ```bash
-# Claude Code: plugin install adds the skill and registers the `zinegen` MCP server in one step
-/plugin install zinegen --marketplace longfin/zinegen
+# Claude Code: the plugin adds the skill and registers the `zinegen` MCP server in one step
+claude plugin marketplace add longfin/zinegen     # the marketplace is named `longfin`
+claude plugin install zinegen@longfin
 
 # Any agent that reads SKILL.md folders (Claude Code, Codex, Cursor, ...): skill only
 npx skills add longfin/zinegen

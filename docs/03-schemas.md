@@ -29,7 +29,7 @@ Unknown keys are errors. Units are in the key name: `_mm`, `_um`, `_pt`.
 | `output.jpeg_quality` | int 50–100 | 95 | the x-1a CMYK conversion, and the upright copy of an EXIF-rotated photo on x-4 (`ORIENTATION_REENCODED`); x-4 otherwise embeds source bytes |
 | `output.max_dpi` | int 150–2400, or null | 350 | x-1a only: each photo is resampled during its single CMYK conversion so its most demanding placement gets this effective resolution (never upsampled); a photo at most 1.1× above it (`render.RESAMPLE_TOLERANCE`) is converted at its source size. null keeps every source pixel. Below 300 every downsampled image is reported `LOW_DPI` (below 200 `BAD_DPI`). x-4 embeds source bytes |
 | `source.album_id` | 32 hex | – | |
-| `source.size` | 640 / 1280 / 2048 / 2560 / fullsize | fullsize | |
+| `source.size` | string: `"640"` / `"1280"` / `"2048"` / `"2560"` / `fullsize` | fullsize | quote the number in YAML (`size: "2560"`); a bare `2560` is an integer and fails validation |
 | `pages[]` | list of page items | required | see below |
 
 Page items. `photo` is a 32-hex Lightroom asset id; `note` (string) is allowed on every item and ignored.
