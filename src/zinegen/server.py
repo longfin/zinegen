@@ -146,19 +146,27 @@ def zg_spec_help() -> str:
 @_tool
 def zg_list_albums(
     query: Annotated[str | None, Field(description="Case-insensitive substring of the album name")] = None,
+    include_counts: Annotated[bool, Field(description="Append each album's photo count (videos included). Costs "
+                                                      "one request per album, so pass a query when you can")] = False,
 ) -> str:
-    """Lightroom albums, one per line: id | name | sort mode."""
-    from lr_mcp import client as lr
-    q = (query or "").lower()
-    rows = []
-    for alb in lr.paginate(lr.catalog_path() + "albums?limit=500"):
-        if alb.get("subtype") != "collection":
-            continue
-        name = alb.get("payload", {}).get("name", "")
-        if q and q not in name.lower():
-            continue
-        rows.append(f"{alb['id']} | {name} | {alb['payload'].get('assetSortOrder')}")
-    return "\n".join(rows) or "no albums"
+    """Lightroom albums, one per line: id | name | sort mode.
+
+    With include_counts each line ends with '| <n> photos'. Counting stops after 60 s: albums not counted
+    by then, or whose count failed, show '? photos' and a last line says how many and why. Finished counts
+    are cached for up to 10 minutes, so calling again continues where the last call stopped."""
+    albums = cli.list_albums(query)
+    if not albums:
+        return "no albums"
+    rows = [f"{alb['id']} | {alb.get('payload', {}).get('name', '')} | {alb['payload'].get('assetSortOrder')}"
+            for alb in albums]
+    if not include_counts:
+        return "\n".join(rows)
+    counts, note = cli.album_counts(albums, hint="call again to count the rest (finished counts are cached), "
+                                                 "or narrow with query")
+    rows = [f"{row} | {cli.photo_count(counts, alb['id'])}" for row, alb in zip(rows, albums, strict=True)]
+    if note:
+        rows.append(_for_agent(note))
+    return "\n".join(rows)
 
 
 @_tool

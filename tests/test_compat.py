@@ -40,7 +40,7 @@ def test_keywords_never_contain_bools():
 
 class _Photo:
     def __init__(self, i):
-        self.id, self.file, self.changed_at = f"{i:032x}", f"IMG_{i}.jpg", "t"
+        self.id, self.file, self.changed_at, self.edited_at = f"{i:032x}", f"IMG_{i}.jpg", "t", "e"
 
 
 def test_fetch_renditions_retry_clears_error_and_writes_index(tmp_path, monkeypatch):
@@ -141,6 +141,76 @@ def test_fetch_renditions_concurrent_writers_of_one_photo(tmp_path, monkeypatch)
     assert [r["errors"] for r in results] == [{}, {}]
     assert (tmp_path / f"{_Photo(0).id}.jpg").read_bytes() == b"jpeg"
     assert not list(tmp_path.glob(".*.part"))
+
+
+def _edited_photo(changed, user=None, develop=None):
+    """A photo as the Partner API describes it: changedAtTime moves on any change, ratings included."""
+    payload = {"changedAtTime": changed, "importSource": {"fileName": "IMG_0.jpg"}}
+    if user:
+        payload["userUpdated"] = user
+    if develop:
+        payload["develop"] = {"userUpdated": develop}
+    return compat._photo({"id": "a" * 32, "subtype": "image", "payload": payload})
+
+
+@pytest.mark.parametrize("payload, expected", [
+    ({"changedAtTime": "c", "userUpdated": "u", "develop": {"userUpdated": "d"}}, "d"),
+    ({"changedAtTime": "c", "userUpdated": "u", "develop": {}}, "u"),
+    ({"changedAtTime": "c"}, "c"),
+    ({}, None),
+])
+def test_edited_at_prefers_develop_time(payload, expected):
+    p = compat._photo({"id": "a" * 32, "subtype": "image", "payload": payload})
+    assert p.edited_at == expected
+    assert p.changed_at == (payload.get("changedAtTime") or payload.get("userUpdated"))   # unchanged meaning
+    assert p.to_dict()["edited_at"] == expected                                          # in photos.json
+
+
+@pytest.fixture
+def renditions(monkeypatch):
+    calls = []
+    monkeypatch.setattr(compat.lr, "rendition", lambda asset_id, size: calls.append(asset_id) or b"jpeg")
+    return calls
+
+
+def test_rating_change_does_not_download_again(tmp_path, renditions):
+    compat.fetch_renditions([_edited_photo("c1", "u1", "d1")], tmp_path, size="640")
+    # a rating or flag edit moves changedAtTime and userUpdated, not develop.userUpdated
+    res = compat.fetch_renditions([_edited_photo("c2", "u2", "d1")], tmp_path, size="640")
+    assert res == {"downloaded": 0, "skipped": 1, "errors": {}} and len(renditions) == 1
+
+
+def test_develop_change_downloads_again(tmp_path, renditions):
+    compat.fetch_renditions([_edited_photo("c1", "u1", "d1")], tmp_path, size="640")
+    res = compat.fetch_renditions([_edited_photo("c2", "u2", "d2")], tmp_path, size="640")
+    assert res["downloaded"] == 1 and len(renditions) == 2
+    entry = json.loads((tmp_path / "index.json").read_text())["a" * 32]
+    assert entry["edited_at"] == "d2" and entry["changed_at"] == "c2"
+
+
+def _old_index(tmp_path, changed_at):
+    """cache/index.json as zinegen 0.2.0 wrote it: no edited_at."""
+    (tmp_path / f"{'a' * 32}.jpg").write_bytes(b"old jpeg")
+    (tmp_path / "index.json").write_text(json.dumps({"a" * 32: {
+        "size": "640", "changed_at": changed_at, "bytes": 8, "file": "IMG_0.jpg", "fetched_at": 0}}))
+
+
+def test_old_index_entry_is_honoured_and_upgraded(tmp_path, renditions):
+    _old_index(tmp_path, "c1")
+    res = compat.fetch_renditions([_edited_photo("c1", "u1", "d1")], tmp_path, size="640")
+    assert res == {"downloaded": 0, "skipped": 1, "errors": {}} and renditions == []
+    entry = json.loads((tmp_path / "index.json").read_text())["a" * 32]
+    assert entry["edited_at"] == "d1" and entry["fetched_at"] == 0
+    # from now on a rating change is recognised as such
+    assert compat.fetch_renditions([_edited_photo("c2", "u2", "d1")], tmp_path, size="640")["skipped"] == 1
+    assert renditions == []
+
+
+def test_old_index_entry_with_another_change_downloads(tmp_path, renditions):
+    # changed since the 0.2.0 fetch; the old entry cannot tell whether the edit was a rating, so fetch once
+    _old_index(tmp_path, "c0")
+    res = compat.fetch_renditions([_edited_photo("c1", "u1", "d1")], tmp_path, size="640")
+    assert res["downloaded"] == 1 and (tmp_path / f"{'a' * 32}.jpg").read_bytes() == b"jpeg"
 
 
 @pytest.mark.parametrize("status, expected", [

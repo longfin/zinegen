@@ -1,7 +1,10 @@
-"""Lightroom helpers that lr-mcp does not provide yet (see lr-mcp issues #9, #10, #11).
+"""Lightroom helpers zinegen needs as structured data.
 
-Reuses lr-mcp's auth, HTTP and rendition code so this module can move upstream unchanged.
-Everything here is read-only against the Partner API.
+lr-mcp 0.4 covers album order, title/caption/keywords/cropped size, a download cache and album photo
+counts, but only as text for its MCP tools. Until it exposes them as functions (longfin/lr-mcp#19) and
+its downloader gains atomic writes, an incremental sidecar and id-based names (longfin/lr-mcp#20), this
+module does that work on top of `lr_mcp.client` (auth, HTTP, renditions), the only non-stdlib dependency it may
+import, so it can still move upstream unchanged. Everything here is read-only against the Partner API.
 """
 from __future__ import annotations
 
@@ -39,7 +42,8 @@ class Photo:
     original: tuple[int, int] | None   # importSource.originalWidth/Height
     cropped: tuple[int, int] | None    # develop.croppedWidth/Height
     orientation: int | None            # develop.userOrientation (EXIF value)
-    changed_at: str | None             # payload.changedAtTime (edit timestamp)
+    changed_at: str | None             # payload.changedAtTime, else userUpdated (moves on any change, ratings too)
+    edited_at: str | None = None       # develop.userUpdated, else userUpdated, else changedAtTime (see _edited)
     extra: dict = field(default_factory=dict)
 
     def to_dict(self):
@@ -92,6 +96,14 @@ def _index(k) -> int | None:
     return None
 
 
+def _edited(payload: dict) -> str | None:
+    """Edit timestamp for the rendition cache, as lr-mcp's `_edited`: `develop.userUpdated` moves only
+    when develop settings (crop included) change, so a rating or flag edit does not force a download;
+    fall back to the asset-wide `userUpdated`, then `changedAtTime`."""
+    return ((payload.get("develop") or {}).get("userUpdated") or payload.get("userUpdated")
+            or payload.get("changedAtTime"))
+
+
 def _photo(album_asset: dict) -> Photo:
     a = album_asset.get("asset", album_asset)
     p = a.get("payload", {})
@@ -116,6 +128,7 @@ def _photo(album_asset: dict) -> Photo:
         cropped=(dev["croppedWidth"], dev["croppedHeight"]) if dev.get("croppedWidth") else None,
         orientation=dev.get("userOrientation"),
         changed_at=p.get("changedAtTime") or p.get("userUpdated"),
+        edited_at=_edited(p),
         extra={"subtype": a.get("subtype")},
     )
 
@@ -162,7 +175,10 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
                      workers: int = 4, log=None) -> dict:
     """Download renditions into `dest/<asset_id>.jpg` with a sidecar `dest/index.json`.
 
-    Unchanged photos (same `changed_at` and size) are skipped. Returns the index.
+    A photo is skipped when its cached rendition has the same size and the same `edited_at`, so rating
+    and flag changes do not trigger a download. An index entry written by zinegen 0.2.0 has no
+    `edited_at`; it still counts as current while its `changed_at` matches, and is then upgraded in
+    place. Returns the summary {downloaded, skipped, errors}.
     """
     if size not in ("640", "1280", "2048", "2560", "fullsize"):
         raise LrError("size must be one of 640, 1280, 2048, 2560, fullsize")
@@ -172,12 +188,20 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
     index = json.loads(index_file.read_text()) if index_file.exists() else {}
     jobs = []
     unique = list({p.id: p for p in photos}.values())  # one download (and one writer) per asset id
+    upgraded = False
     for p in unique:
         path = dest / f"{p.id}.jpg"
         entry = index.get(p.id)
-        if (not force and entry and path.exists() and entry.get("size") == size
-                and entry.get("changed_at") == p.changed_at):
-            continue
+        if not force and entry and path.exists() and entry.get("size") == size:
+            if "edited_at" in entry:
+                current = entry["edited_at"] == p.edited_at
+            else:  # 0.2.0 entry: only changed_at was recorded
+                current = entry.get("changed_at") == p.changed_at
+                if current:
+                    index[p.id] = {**entry, "edited_at": p.edited_at}
+                    upgraded = True
+            if current:
+                continue
         jobs.append((p, path))
     errors = {}
     lock = threading.Lock()
@@ -201,13 +225,15 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
                 continue
             _atomic_write(path, data)  # never leave a truncated JPEG under the final name
             with lock:
-                index[p.id] = {"size": size, "changed_at": p.changed_at, "bytes": len(data),
+                index[p.id] = {"size": size, "changed_at": p.changed_at, "edited_at": p.edited_at, "bytes": len(data),
                                "file": p.file, "fetched_at": int(time.time())}
                 save_index()
             if log:
                 log(f"fetched {p.file or p.id} ({len(data) // 1024} KB)")
             return
 
+    if upgraded:
+        save_index()
     with ThreadPoolExecutor(workers) as ex:
         list(ex.map(fetch, jobs))
     with lock:

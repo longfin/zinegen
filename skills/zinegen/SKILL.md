@@ -30,7 +30,9 @@ order, an unknown album id or ICC profile). Read the message and fix the cause r
 ## Workflow
 
 1. **Pick the album.** `zg_list_albums` with `query` (case-insensitive substring of the album name). Without a
-   query it lists every album in the catalog, which can be very long, and it shows no photo counts.
+   query it lists every album in the catalog, which can be very long. `include_counts: true` adds each album's
+   photo count (one request per album, 60 s at most; `?` for albums not counted yet, call again to continue),
+   so use it with a query.
    `zg_album_photos` takes the 32-hex album id (not a name) and shows the album's own order, crop size (L/P),
    rating, flag and the Lightroom title/caption of each photo.
 2. **Print target.** Ask (or infer from the request) trim size, binding and print target. Offset/국내 인쇄소 →

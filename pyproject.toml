@@ -18,7 +18,7 @@ classifiers = [
   "Topic :: Printing",
 ]
 dependencies = [
-  "lr-mcp>=0.2",
+  "lr-mcp>=0.4",
   "mcp>=2.3,<3",
   "weasyprint>=66",
   "pillow>=11",

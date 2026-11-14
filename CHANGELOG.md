@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `zinegen albums --counts` and `zg_list_albums` `include_counts`: each album's photo count (videos included),
+  off by default. Only albums that match the query are counted, one request per album, within 60 s in all;
+  albums not counted in time, or whose count failed, show `?` and a closing line says how many and why. The
+  MCP server keeps finished counts for up to 10 minutes, so calling it again continues. Output without counts
+  is unchanged.
+- `photos.json` photos have `edited_at`, the last develop edit (`develop.userUpdated`, else `userUpdated`, else
+  `changedAtTime`). `changed_at` keeps its meaning.
+
+### Changed
+
+- Requires lr-mcp 0.4 (for `album_asset_count`). Its client also retries GETs on connection drops and
+  429/5xx responses.
+- `fetch` decides whether a cached rendition is current by `edited_at` instead of `changed_at`, so changing a
+  rating or flag in Lightroom no longer downloads the photo again. Caches from 0.2.0 stay valid: an entry
+  without `edited_at` is current while its `changed_at` matches and then records `edited_at`. A photo whose
+  rating, flag or edit changed between the 0.2.0 fetch and the first fetch after upgrading is downloaded once.
+
 ## 0.2.0 — 2026-11-14
 
 **Rebuild PDFs made with 0.1.0.** WeasyPrint re-encoded every embedded JPEG in 0.1.0 (a second lossy

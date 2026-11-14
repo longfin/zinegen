@@ -508,3 +508,80 @@ def test_proof_without_pages_is_error(broken_pdf, monkeypatch):
 def test_proof_unreadable_pdf_with_ghostscript(broken_pdf):
     res = call("zg_proof", {"book": str(broken_pdf)})
     assert res.is_error
+
+
+# ---------------------------------------------------------------- album listing and photo counts
+
+C1, C2, C3 = "1" * 32, "2" * 32, "3" * 32
+
+
+@pytest.fixture
+def albums(lightroom, monkeypatch):
+    """Three albums and a folder; `counted` records album_asset_count calls, `results` sets their outcome."""
+    rows = [{"id": C1, "subtype": "collection", "updated": "u1",
+             "payload": {"name": "Autumn walk", "assetSortOrder": "customAsc"}},
+            {"id": "f" * 32, "subtype": "collection_set", "updated": "uf", "payload": {"name": "Autumn folder"}},
+            {"id": C2, "subtype": "collection", "updated": "u2",
+             "payload": {"name": "autumn rain", "assetSortOrder": "captureDateAsc"}},
+            {"id": C3, "subtype": "collection", "updated": "u3",
+             "payload": {"name": "Winter", "assetSortOrder": "captureDateAsc"}}]
+    monkeypatch.setattr(lightroom, "paginate", lambda path: iter(rows))
+    state = {"counted": [], "results": {C1: 1, C2: 112, C3: 7}}
+
+    def count(album_id, updated=None, deadline=None):
+        state["counted"].append((album_id, updated, deadline))
+        r = state["results"][album_id]
+        if isinstance(r, Exception):
+            raise r
+        return r
+    monkeypatch.setattr(lightroom, "album_asset_count", count)
+    return state
+
+
+def test_list_albums_without_counts_is_unchanged(albums, capsys):
+    # the exact 0.2.0 output: no count requests, no extra column
+    assert text(call("zg_list_albums", {"query": "AUTUMN"})) == (
+        f"{C1} | Autumn walk | customAsc\n{C2} | autumn rain | captureDateAsc")
+    assert text(call("zg_list_albums", {"query": "nothing"})) == "no albums"
+    assert cli.main(["albums", "autumn"]) == 0
+    out, err = capsys.readouterr()
+    assert out == f"{C1}  Autumn walk  [customAsc]\n{C2}  autumn rain  [captureDateAsc]\n" and err == ""
+    assert albums["counted"] == []
+
+
+def test_list_albums_counts_only_matching_albums(albums):
+    out = text(call("zg_list_albums", {"query": "autumn", "include_counts": True}))
+    assert out == f"{C1} | Autumn walk | customAsc | 1 photo\n{C2} | autumn rain | captureDateAsc | 112 photos"
+    # the folder and the album outside the query are not counted; each count gets the album's `updated`
+    assert sorted((a, u) for a, u, _ in albums["counted"]) == [(C1, "u1"), (C2, "u2")]
+    deadlines = {d for _, _, d in albums["counted"]}
+    assert len(deadlines) == 1 and isinstance(deadlines.pop(), float)   # one overall time budget
+
+
+def test_list_albums_late_and_failed_counts(albums, capsys):
+    albums["results"].update({C1: None, C3: compat.LrError("GET /v2/catalogs/c0ffee/albums/x/assets returned 500: boom")})
+    out = text(call("zg_list_albums", {"include_counts": True})).splitlines()
+    assert out[:3] == [f"{C1} | Autumn walk | customAsc | ? photos", f"{C2} | autumn rain | captureDateAsc | 112 photos",
+                       f"{C3} | Winter | captureDateAsc | ? photos"]
+    assert out[3].startswith("1 of 3 albums not counted, time limit of 60 s reached: call again")
+    assert "1 could not be counted: GET albums/x/assets returned 500" in out[3] and "c0ffee" not in out[3]
+    assert len(out) == 4
+
+    assert cli.main(["albums", "--counts"]) == 0    # a failed count does not fail the listing
+    o, err = capsys.readouterr()
+    assert o.splitlines() == [f"{C1}  Autumn walk  [customAsc]  ? photos",
+                              f"{C2}  autumn rain  [captureDateAsc]  112 photos",
+                              f"{C3}  Winter  [captureDateAsc]  ? photos"]
+    assert "1 of 3 albums not counted" in err and "narrow the listing with a query" in err
+
+
+def test_count_error_after_the_deadline_is_late(albums):
+    """A request cut short at the deadline raises; that album is late, not broken."""
+    albums["results"][C2] = compat.LrError("timed out")
+    counts, note = cli.album_counts([{"id": C2, "updated": "u2"}], seconds=-1)
+    assert counts == {} and note.startswith("1 of 1 albums not counted") and "could not" not in note
+
+
+def test_list_albums_rejects_unknown_arguments(albums):
+    res = call("zg_list_albums", {"counts": True})
+    assert res.is_error and "Extra inputs are not permitted" in text(res)
