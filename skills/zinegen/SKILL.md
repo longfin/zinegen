@@ -126,14 +126,14 @@ Each issue has `code`, `level` (`info` | `warning` | `error`), `message` and, wh
 | `NO_OUTPUT_PROFILE` | error | x-4 with `output.icc` unset: no output intent, fine for proofs, not for print |
 | `DPI_ABOVE_NEED` | info | x-4 photos far above print resolution; may suggest a smaller `source.size` |
 | `ORIENTATION_REENCODED` | warning | x-4 photo with an EXIF rotation, re-encoded once to embed it upright |
-| `TEXT_CLIPPED` | warning | a caption (two lines) or other text box has more lines than fit; the rest is not printed |
+| `TEXT_CLIPPED` | warning | a caption (two lines) or other text box has more lines than fit; the rest is not printed. "holds 0": its space is under one line high (smaller type or more room) |
 | `DISPLAY_OUTPUT_PROFILE` | warning | `output.icc` is a display profile (e.g. the bundled sRGB), not the printer's |
 | `NO_OUTPUT_INTENT`, `NO_DEST_PROFILE`, `NO_PDFX_VERSION`, `PDF_VERSION` | error | PDF check |
 | `NO_TRIMBOX`, `TRIMBOX_SIZE`, `BLEED_SMALL` | error | PDF check |
 | `NO_BLEEDBOX` | warning | PDF check |
 | `IMAGE_COLORSPACE`, `IMAGE_SMASK`, `FONT_NOT_EMBEDDED` | error | PDF check |
 | `TRANSPARENCY` | error on x-1a, warning on x-4 | PDF check (page and nested Form XObjects) |
-| `VECTOR_COLORSPACE` | error | PDF check: RGB vector colour on x-1a (or on x-4 with a CMYK output intent) |
+| `VECTOR_COLORSPACE` | error | PDF check: RGB vector colour on x-1a; on x-4 a device colour space that does not match the output intent (DeviceRGB without an RGB intent, DeviceCMYK without a CMYK one) |
 
 ## Layout rules the renderer enforces
 

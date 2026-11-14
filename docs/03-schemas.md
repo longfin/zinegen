@@ -119,14 +119,14 @@ they differ only on x-1a when `max_dpi` downsampled the photo. Layout geometry a
 | `NO_OUTPUT_PROFILE` | error | render: x-4 with `output.icc` unset (a set but unresolvable profile fails the render instead) |
 | `DPI_ABOVE_NEED` | info | render: x-4 placements above 1.5 × `output.max_dpi` (default 350); x-4 embeds source bytes unchanged. Suggests a smaller `source.size` only if every placement stays ≥ 300 dpi with it |
 | `ORIENTATION_REENCODED` | warning | render: x-4 photo with an EXIF orientation tag; rotated and JPEG-encoded once (`output.jpeg_quality`) to embed it upright, so it is not the source bytes. x-1a applies the orientation during its single CMYK conversion (no issue) |
-| `TEXT_CLIPPED` | warning | render: a text box (caption, body, colophon, title, ...) has more lines than fit; `page` is set. Boxes hold a whole number of lines (a caption two), so the cut falls between lines |
+| `TEXT_CLIPPED` | warning | render: a text box (caption, body, colophon, title, ...) has more lines than fit; `page` is set. Boxes hold a whole number of lines (a caption two), so the cut falls between lines. A space less than one line high gets a box of 0 lines ("holds 0"): nothing is printed rather than drawn past the space |
 | `DISPLAY_OUTPUT_PROFILE` | warning | render: `output.icc` is not a printer-class (`prtr`) ICC profile, e.g. the bundled `sRGB2014.icc` (display class). Valid PDF/X-4, but the output intent describes a screen |
 | `NO_OUTPUT_INTENT`, `NO_DEST_PROFILE`, `NO_PDFX_VERSION`, `PDF_VERSION` | error | check |
-| `NO_TRIMBOX`, `TRIMBOX_SIZE`, `BLEED_SMALL` | error | check |
+| `NO_TRIMBOX`, `TRIMBOX_SIZE`, `BLEED_SMALL` | error | check (`BLEED_SMALL`: the BleedBox is less than `bleed_mm` beyond the TrimBox on any side) |
 | `NO_BLEEDBOX` | warning | check |
-| `IMAGE_COLORSPACE`, `IMAGE_SMASK`, `FONT_NOT_EMBEDDED` | error | check (images and fonts in nested Form XObjects included) |
+| `IMAGE_COLORSPACE`, `IMAGE_SMASK`, `FONT_NOT_EMBEDDED` | error | check (images and fonts in nested Form XObjects, annotation appearance streams and Type 3 glyphs included; inline images `BI … EI` too, abbreviated `/CS /RGB` etc. resolved). A Type 3 font is not `FONT_NOT_EMBEDDED`: its glyphs are content streams, which are checked |
 | `TRANSPARENCY` | error on x-1a, warning on x-4 | check: ExtGState alpha (`CA`/`ca` < 1), blend mode, soft mask, or a transparency group, on the page or in any Form XObject or tiling pattern it reaches |
-| `VECTOR_COLORSPACE` | error | check: vector colour the standard does not allow, in the page or any nested Form/pattern: `rg`/`RG`/`cs /DeviceRGB` and colour space resources that are (or have an alternate/base that is) RGB, Lab or ICC-based on x-1a; DeviceRGB on x-4 with a CMYK output intent |
+| `VECTOR_COLORSPACE` | error | check: vector colour the standard does not allow, in the page or anything it reaches (nested Forms, patterns, annotation appearances, Type 3 glyphs): `rg`/`RG`/`cs /DeviceRGB` and colour space resources that are (or have an alternate/base that is) RGB, Lab or ICC-based on x-1a; on x-4 a device space that does not match the output intent: DeviceRGB without an RGB intent, DeviceCMYK (`k`/`K`, `cs /DeviceCMYK`, a CMYK alternate) without a CMYK intent. A colour space or shading resource shared by several pages is reported once, with `page` its first page and the page count in the message |
 
 ## Not frozen (yet)
 
@@ -154,3 +154,10 @@ they differ only on x-1a when `max_dpi` downsampled the photo. Layout geometry a
   registration colour and enlarges the MediaBox (0.1.0 used WeasyPrint's marks: DeviceRGB, a transparency
   group and inside the bleed, with MediaBox = BleedBox). TrimBox/BleedBox are unchanged. `check.json` now
   looks into nested Form XObjects, so a PDF written by 0.1.0 with marks fails the x-1a check.
+- v1, clarified (no version bump): `BLEED_SMALL` looks at all four sides, and the BleedBox is now the real
+  bleed for any `bleed_mm` (WeasyPrint capped it at 10 pt, so a bleed above 3.53 mm failed `check`).
+  `VECTOR_COLORSPACE` also covers DeviceCMYK on x-4 without a CMYK output intent and DeviceRGB on x-4 with a
+  Gray intent; a shared colour-space or shading resource is reported once (first page, page count in the
+  message) instead of once per page. `check` also inspects inline images, annotation appearance streams and
+  Type 3 glyphs, and no longer reports a Type 3 font as `FONT_NOT_EMBEDDED`. Text on x-4 with an RGB or Gray
+  output intent is drawn in the intent profile (ICCBased) instead of DeviceCMYK.

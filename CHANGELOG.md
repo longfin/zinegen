@@ -48,6 +48,23 @@ output.
 - `check` looks into nested Form XObjects and tiling patterns (transparency groups, ExtGState alpha, soft
   masks and blend modes, images, fonts) and at the colour operators of every content stream, so RGB vector
   colour on PDF/X-1a is reported (`VECTOR_COLORSPACE`) instead of passing.
+- `check` also inspects inline images (`BI … EI`, abbreviated `/CS /RGB`, `/G`, `/CMYK`, `/I` and named
+  colour spaces), annotation appearance streams and Type 3 glyph procedures; a Type 3 font is no longer
+  reported as `FONT_NOT_EMBEDDED`. On PDF/X-4 a device colour space must match the output intent: DeviceRGB is
+  reported without an RGB intent (a Gray intent passed before) and DeviceCMYK without a CMYK one. A shared bad
+  colour-space or shading resource is reported once, with the page count, instead of once per page.
+- `bleed_mm` above 3.53 mm no longer fails `check` with `BLEED_SMALL`: WeasyPrint caps the BleedBox at 10 pt
+  although it lays the page out for the full bleed; render now sets the BleedBox to the real bleed (with or
+  without marks), and `BLEED_SMALL` checks all four sides.
+- Text on PDF/X-4 with an RGB (or Gray) output intent, e.g. the bundled sRGB proof profile, was DeviceCMYK,
+  which PDF/X-4 only allows with a CMYK intent. It is now the same lightness in the output-intent profile
+  (ICCBased); CMYK intents and PDF/X-1a keep pure K.
+- Unused Lab/ICCBased colour spaces are pruned in Form XObjects as well as on pages.
+- A text space less than one line high (large type in a small box) gets a 0-line box reported as
+  `TEXT_CLIPPED` instead of a one-line box that spilled past its space.
+- Rendering a book whose id an older fetch reported missing but that `photos.json` now lists asks for a fetch
+  instead of a `book.yaml` change; the "replace the id" message says that a fetch re-checks.
+- Render fails, instead of drawing misplaced crop marks, if pages ever had different trim sizes.
 - `zinegen spine` / `zg_spine` compute the width for the rounded page count they announce (23 pages perfect
   bound were reported "rounded to 24" with the 23-page width; hardcover 24 → 32 likewise).
 - Text that does not fit its box is cut between lines instead of through the middle of a glyph (every text box
