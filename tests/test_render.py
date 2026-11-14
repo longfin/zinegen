@@ -297,7 +297,9 @@ def test_marks_are_pdfx_safe(book_dir: Path, request, kind: str):
     render.render(book)
     res = check.check(book)
     assert res["ok"], res["issues"]
-    assert not {i["code"] for i in res["issues"]} & {"TRANSPARENCY", "VECTOR_COLORSPACE"}
+    # no false positive from the deeper walk (inline images, annotations, Type 3, device colour vs intent)
+    assert not {i["code"] for i in res["issues"]} & {"TRANSPARENCY", "VECTOR_COLORSPACE", "IMAGE_COLORSPACE",
+                                                       "FONT_NOT_EMBEDDED", "BLEED_SMALL"}
     with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
         for page in p.pages:
             b = _boxes(page)
@@ -325,6 +327,36 @@ def test_marks_are_pdfx_safe(book_dir: Path, request, kind: str):
                 else page.Contents.read_bytes()
             assert b"rg\n" not in content and b" RG\n" not in content
     assert std == book.output["standard"]
+
+
+@pytest.mark.parametrize("kind", ["x-4", "x-1a", "x-4-cmyk"])
+def test_text_colour_matches_output_intent(book_dir: Path, request, kind: str):
+    """Text is pure K (DeviceCMYK) on a CMYK intent; on an RGB intent, where PDF/X-4 does not allow DeviceCMYK,
+    it is the same lightness in the intent profile (ICCBased), never DeviceCMYK or DeviceRGB."""
+    import pikepdf
+    _output(book_dir, request, kind)
+    _set_page(book_dir, 5, text="colophon text")
+    book = spec.load(book_dir / "book.yaml")
+    render.render(book)
+    assert check.check(book)["ok"]
+    selected = set()
+    with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
+        for page in p.pages:
+            for operands, op in pikepdf.parse_content_stream(page):
+                assert str(op) not in ("k", "K", "rg", "RG")
+                if str(op) in ("cs", "CS"):
+                    selected.add(str(operands[0]))
+                    if kind == "x-4":
+                        icc = page.Resources.ColorSpace[str(operands[0])]
+                        assert str(icc[0]) == "/ICCBased" and int(icc[1].N) == 3
+    assert selected == ({"/--press"} if kind == "x-4" else {"/DeviceCMYK"})
+
+
+def test_ink():
+    assert render.ink(1, ["c", "m", "y", "k"]) == "device-cmyk(0 0 0 1)"
+    assert render.ink(0.85, None) == "device-cmyk(0 0 0 0.85)"
+    assert render.ink(0.85, ["r", "g", "b"]) == "color(--press 0.15 0.15 0.15)"
+    assert render.ink(1, ["gray"]) == "color(--press 0)"
 
 
 def test_marks_off(book_dir: Path):

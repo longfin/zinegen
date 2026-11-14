@@ -42,8 +42,6 @@ def check(book: Book) -> dict:
         if std == "pdf/x-1a" and pdf.pdf_version > "1.4":
             issues.append(Issue("PDF_VERSION", f"PDF/X-1a requires PDF 1.4 or lower, got {pdf.pdf_version}"))
         exp_trim = (round(book.trim_w * PT, 1), round(book.trim_h * PT, 1))
-        seen: set = set()        # objects already checked (resources are often shared between pages)
-        intent_cmyk = bool(oi) and int(oi[0].get("/DestOutputProfile", {}).get("/N", 0)) == 4
         for n, page in enumerate(pdf.pages, 1):
             tb = page.obj.get("/TrimBox")
             if tb is None:
@@ -61,7 +59,7 @@ def check(book: Book) -> dict:
                 if least < book.bleed * PT - 0.6:
                     issues.append(Issue("BLEED_SMALL", f"BleedBox is {least / PT:.2f} mm beyond the trim on its "
                                         f"narrowest side, smaller than the {book.bleed} mm bleed", page=n))
-            issues += _check_content(page, n, std, intent_cmyk, seen)
+        issues += check_content(pdf, std)
     rep_file = book.out_dir / "report.json"
     if rep_file.exists():
         for it in json.loads(rep_file.read_text()).get("issues", []):
@@ -74,124 +72,233 @@ def check(book: Book) -> dict:
 
 # Colour space families PDF/X-1a allows; Separation/DeviceN/Indexed are checked through their alternate/base.
 X1A_SPACES = ("/DeviceCMYK", "/DeviceGray", "/Separation", "/DeviceN", "/Indexed", "/Pattern")
+# Abbreviated colour space names an inline image (BI … ID … EI) may use.
+INLINE_SPACES = {"/G": "/DeviceGray", "/RGB": "/DeviceRGB", "/CMYK": "/DeviceCMYK", "/I": "/Indexed"}
+# Colour space families that are never a resource name.
+_FAMILIES = {"/DeviceGray", "/DeviceRGB", "/DeviceCMYK", "/Indexed", "/Separation", "/DeviceN", "/Pattern",
+             "/ICCBased", "/Lab", "/CalRGB", "/CalGray", *INLINE_SPACES}
 
 
 def _families(cs) -> list[str]:
     """Every colour space family a colour space uses: itself, a Separation/DeviceN alternate, an Indexed base."""
     if isinstance(cs, pikepdf.Array) and len(cs):
-        fam = str(cs[0])
+        fam = INLINE_SPACES.get(str(cs[0]), str(cs[0]))
         if fam in ("/Separation", "/DeviceN") and len(cs) > 2:
             return [fam, *_families(cs[2])]
         if fam == "/Indexed" and len(cs) > 1:
             return [fam, *_families(cs[1])]
         return [fam]
-    return [str(cs)] if cs is not None else []
+    return [INLINE_SPACES.get(str(cs), str(cs))] if cs is not None else []
 
 
-def _bad_space(families: list[str], std: str, intent_cmyk: bool) -> str | None:
-    """Why a colour space is not allowed on this standard, or None."""
+def _bad_space(families: list[str], std: str, intent_n: int) -> str | None:
+    """Why a colour space is not allowed on this standard, or None.
+
+    `intent_n` is the number of components of the output intent profile (0 without one, which is reported on
+    its own as NO_OUTPUT_INTENT). PDF/X-4 allows a device colour space only when it matches the output intent:
+    DeviceRGB needs an RGB intent and DeviceCMYK a CMYK one (DeviceGray is allowed with any intent)."""
     if std == "pdf/x-1a":
         bad = [f for f in families if f not in X1A_SPACES]
         return f"{bad[0]} (PDF/X-1a allows CMYK, Gray, Separation and DeviceN only)" if bad else None
-    if "/DeviceRGB" in families and intent_cmyk:
-        return "/DeviceRGB (PDF/X-4 with a CMYK output intent needs RGB to be ICC-tagged)"
+    if "/DeviceRGB" in families and intent_n not in (0, 3):
+        return "/DeviceRGB (PDF/X-4 without an RGB output intent needs RGB to be ICC-tagged)"
+    if "/DeviceCMYK" in families and intent_n not in (0, 4):
+        return "/DeviceCMYK (PDF/X-4 without a CMYK output intent needs CMYK to be ICC-tagged)"
     return None
 
 
-def _check_content(page, n: int, std: str, intent_cmyk: bool, seen: set) -> list[Issue]:
-    """Check a page and everything its resources reach: nested Form XObjects (and tiling patterns), their
-    transparency groups, ExtGStates, images, fonts and the colour operators in every content stream.
-    WeasyPrint's own crop marks were a Form with a transparency group, an ExtGState with `ca 0` and DeviceRGB
-    strokes, all invisible to a check that only looked at the page's own resources."""
-    issues: list[Issue] = []
-    tlevel = "error" if std == "pdf/x-1a" else "warning"
+def _intent_components(pdf) -> int:
+    oi = pdf.Root.get("/OutputIntents")
+    if not oi:
+        return 0
+    try:
+        return int(oi[0].get("/DestOutputProfile", {}).get("/N", 0))
+    except (TypeError, ValueError, AttributeError):
+        return 0
 
-    def once(obj) -> bool:
+
+def check_content(pdf, std: str) -> list[Issue]:
+    """Check every page and everything it reaches: resources (colour spaces, shadings, ExtGStates, fonts,
+    images), nested Form XObjects and tiling patterns, annotation appearance streams, Type 3 glyph procedures,
+    and the colour operators and inline images in every content stream.
+
+    Each indirect object is checked once, so shared resources and self-referencing ones cannot repeat or loop. A
+    bad colour space or shading resource is reported once, on the first page that uses it, with the number of
+    pages. WeasyPrint's own crop marks were a Form with a transparency group, an ExtGState with `ca 0` and
+    DeviceRGB strokes, all invisible to a check that only looked at the page's own resources."""
+    return _Walker(std, _intent_components(pdf)).run(pdf)
+
+
+class _Walker:
+    def __init__(self, std: str, intent_n: int):
+        self.std = std
+        self.intent_n = intent_n
+        self.tlevel = "error" if std == "pdf/x-1a" else "warning"
+        self.seen: set = set()
+        self.issues: list[Issue] = []
+        self.shared: dict = {}          # (message, resource identity) -> pages it was found on
+        self.n = 0
+
+    def run(self, pdf) -> list[Issue]:
+        for self.n, page in enumerate(pdf.pages, 1):
+            group = page.obj.get("/Group")
+            if group is not None and str(group.get("/S")) == "/Transparency":
+                self.add("TRANSPARENCY", "page has a transparency group", level=self.tlevel)
+            try:
+                res = page.Resources
+            except (AttributeError, KeyError):
+                res = pikepdf.Dictionary()
+            self.resources(res, "")
+            self.operators(page.obj, "", res)
+            for annot in page.obj.get("/Annots") or []:
+                self.annotation(annot)
+        for (msg, _), pages in self.shared.items():
+            more = f" (on {len(pages)} pages, first {pages[0]})" if len(pages) > 1 else ""
+            self.issues.append(Issue("VECTOR_COLORSPACE", msg + more, page=pages[0]))
+        return self.issues
+
+    def add(self, code: str, message: str, level: str = ""):
+        self.issues.append(Issue(code, message, level=level, page=self.n))
+
+    def once(self, obj) -> bool:
         """True the first time an indirect object is seen; direct objects are always checked."""
-        if not obj.is_indirect:
+        if not isinstance(obj, pikepdf.Object) or not obj.is_indirect:
             return True
-        if obj.objgen in seen:
+        if obj.objgen in self.seen:
             return False
-        seen.add(obj.objgen)
+        self.seen.add(obj.objgen)
         return True
 
-    def space(cs, what: str):
-        why = _bad_space(_families(cs), std, intent_cmyk)
+    def space(self, cs, what: str):
+        """A colour space or shading resource: reported once per resource, with the pages it is on."""
+        why = _bad_space(_families(cs), self.std, self.intent_n)
         if why:
-            issues.append(Issue("VECTOR_COLORSPACE", f"{what} is {why}", page=n))
+            key = cs.objgen if isinstance(cs, pikepdf.Object) and cs.is_indirect else repr(cs)
+            pages = self.shared.setdefault((f"{what} is {why}", key), [])
+            if self.n not in pages:
+                pages.append(self.n)
 
-    def resources(res, where: str):
+    def resources(self, res, where: str):
+        if not isinstance(res, pikepdf.Dictionary):
+            return
         for k, g in (res.get("/ExtGState") or {}).items():
-            if not once(g):
+            if not self.once(g):
                 continue
             smask = g.get("/SMask")
             if (float(g.get("/CA", 1)) < 1 or float(g.get("/ca", 1)) < 1
                     or str(g.get("/BM", "/Normal")) not in ("/Normal", "/Compatible")
                     or (smask is not None and str(smask) != "/None")):
-                issues.append(Issue("TRANSPARENCY", f"transparency in ExtGState {k}{where}", page=n, level=tlevel))
+                self.add("TRANSPARENCY", f"transparency in ExtGState {k}{where}", level=self.tlevel)
         for k, cs in (res.get("/ColorSpace") or {}).items():
-            space(cs, f"colour space {k}{where}")
+            self.space(cs, f"colour space {k}{where}")
         for k, sh in (res.get("/Shading") or {}).items():
-            space(sh.get("/ColorSpace"), f"shading {k}{where}")
-        for fo in (res.get("/Font") or {}).values():
-            if not once(fo):
-                continue
-            fd = fo.get("/DescendantFonts")
-            d = (fd[0] if fd else fo).get("/FontDescriptor")
-            if not d or not any(k in d for k in ("/FontFile", "/FontFile2", "/FontFile3")):
-                issues.append(Issue("FONT_NOT_EMBEDDED", f"font {fo.get('/BaseFont')} not embedded", page=n))
+            self.space(sh.get("/ColorSpace"), f"shading {k}{where}")
+        for k, fo in (res.get("/Font") or {}).items():
+            if self.once(fo):
+                self.font(k, fo, res, where)
         for name, x in (res.get("/XObject") or {}).items():
-            if not once(x):
+            if not self.once(x):
                 continue
             sub = str(x.get("/Subtype"))
             if sub == "/Image":
-                image(name, x)
+                self.image(f"image {name}{where}", x.get("/ColorSpace"), bool(x.get("/ImageMask", False)),
+                           "/SMask" in x)
             elif sub == "/Form":
-                form(x, f" in form XObject {name}")
+                self.form(x, f" in form XObject {name}")
         for name, pat in (res.get("/Pattern") or {}).items():
-            if not once(pat):
+            if not self.once(pat):
                 continue
             if int(pat.get("/PatternType", 0)) == 1:
-                form(pat, f" in pattern {name}")
+                self.form(pat, f" in pattern {name}")
             elif "/Shading" in pat:
-                space(pat.Shading.get("/ColorSpace"), f"shading in pattern {name}")
+                self.space(pat.Shading.get("/ColorSpace"), f"shading in pattern {name}")
 
-    def image(name, x):
-        fam = _families(x.get("/ColorSpace"))
-        if std == "pdf/x-1a" and not x.get("/ImageMask", False) and (not fam or any(f not in X1A_SPACES for f in fam)):
-            issues.append(Issue("IMAGE_COLORSPACE", f"image {name} is {fam[0] if fam else 'without a colour space'}; "
-                                "PDF/X-1a allows CMYK/Gray only", page=n))
-        if std == "pdf/x-4" and fam[:1] == ["/DeviceRGB"]:
-            issues.append(Issue("IMAGE_COLORSPACE", f"image {name} is untagged DeviceRGB; PDF/X-4 needs ICCBased RGB", page=n))
-        if "/SMask" in x and std == "pdf/x-1a":
-            issues.append(Issue("IMAGE_SMASK", f"image {name} has a soft mask (transparency)", page=n))
+    def font(self, name, fo, parent_res, where: str):
+        if str(fo.get("/Subtype")) == "/Type3":
+            # glyphs are content streams in the PDF itself: nothing to embed, but their operators count
+            fres = fo.get("/Resources")
+            res = fres if fres is not None else parent_res
+            if fres is not None:
+                self.resources(fres, f" in Type 3 font {name}{where}")
+            for glyph, proc in (fo.get("/CharProcs") or {}).items():
+                if self.once(proc):
+                    self.operators(proc, f" in glyph {glyph} of Type 3 font {name}{where}", res)
+            return
+        fd = fo.get("/DescendantFonts")
+        d = (fd[0] if fd else fo).get("/FontDescriptor")
+        if not d or not any(k in d for k in ("/FontFile", "/FontFile2", "/FontFile3")):
+            self.add("FONT_NOT_EMBEDDED", f"font {fo.get('/BaseFont')} not embedded")
 
-    def form(x, where: str):
+    def image(self, what: str, cs, mask: bool, smask: bool):
+        fam = _families(cs)
+        if self.std == "pdf/x-1a":
+            bad = [f for f in fam if f not in X1A_SPACES]
+            if not mask and (not fam or bad):
+                self.add("IMAGE_COLORSPACE", f"{what} is {bad[0] if bad else 'without a colour space'}; "
+                         "PDF/X-1a allows CMYK/Gray only")
+        elif fam[:1] == ["/DeviceRGB"]:
+            self.add("IMAGE_COLORSPACE", f"{what} is untagged DeviceRGB; PDF/X-4 needs ICCBased RGB")
+        elif not mask and (why := _bad_space(fam, self.std, self.intent_n)):
+            self.add("IMAGE_COLORSPACE", f"{what} is {why}")
+        if smask and self.std == "pdf/x-1a":
+            self.add("IMAGE_SMASK", f"{what} has a soft mask (transparency)")
+
+    def form(self, x, where: str):
         group = x.get("/Group")
         if group is not None and str(group.get("/S")) == "/Transparency":
-            issues.append(Issue("TRANSPARENCY", f"transparency group{where}", page=n, level=tlevel))
+            self.add("TRANSPARENCY", f"transparency group{where}", level=self.tlevel)
         res = x.get("/Resources")
         if res is not None:
-            resources(res, where)
-        operators(x, where)
+            self.resources(res, where)
+        self.operators(x, where, res)
 
-    def operators(obj, where: str):
-        """DeviceRGB set directly by colour operators (rg/RG, or cs/CS /DeviceRGB) in a content stream."""
+    def annotation(self, annot):
+        """Appearance streams (/AP /N, /R, /D, each a form or a dict of forms per appearance state) are
+        printed like page content when the annotation is."""
+        if not isinstance(annot, pikepdf.Dictionary) or not self.once(annot):
+            return
+        sub = str(annot.get("/Subtype", "")).lstrip("/")
+        for kind, ap in (annot.get("/AP") or {}).items():
+            forms = [ap] if isinstance(ap, pikepdf.Stream) else list((ap or {}).values())
+            for f in forms:
+                if isinstance(f, pikepdf.Stream) and self.once(f):
+                    self.form(f, f" in the {kind.lstrip('/')} appearance of a {sub} annotation")
+
+    def operators(self, obj, where: str, res):
+        """DeviceRGB/DeviceCMYK set directly by colour operators (rg/RG, k/K, or cs/CS with a device space)
+        and the colour space of inline images in a content stream."""
         try:
             ops = pikepdf.parse_content_stream(obj)
         except pikepdf.PdfError:
             return
-        rgb = sum(1 for operands, op in ops
-                  if str(op) in ("rg", "RG")
-                  or (str(op) in ("cs", "CS") and operands and str(operands[0]) == "/DeviceRGB"))
-        why = _bad_space(["/DeviceRGB"], std, intent_cmyk) if rgb else None
-        if why:
-            issues.append(Issue("VECTOR_COLORSPACE", f"{rgb} DeviceRGB colour operator(s) "
-                                f"{where.strip() or 'in the page content'}: {why}", page=n))
+        found: dict[str, int] = {}
+        inline = 0
+        for operands, op in ops:
+            op = str(op)
+            if op in ("rg", "RG"):
+                fam = "/DeviceRGB"
+            elif op in ("k", "K"):
+                fam = "/DeviceCMYK"
+            elif op in ("cs", "CS") and operands and str(operands[0]) in ("/DeviceRGB", "/DeviceCMYK"):
+                fam = str(operands[0])
+            elif op == "INLINE IMAGE" and operands:
+                inline += 1
+                self.inline_image(operands[0], inline, where, res)
+                continue
+            else:
+                continue
+            found[fam] = found.get(fam, 0) + 1
+        for fam, count in found.items():
+            why = _bad_space([fam], self.std, self.intent_n)
+            if why:
+                self.add("VECTOR_COLORSPACE", f"{count} {fam.lstrip('/')} colour operator(s) "
+                         f"{where.strip() or 'in the page content'}: {why}")
 
-    group = page.obj.get("/Group")
-    if group is not None and str(group.get("/S")) == "/Transparency":
-        issues.append(Issue("TRANSPARENCY", "page has a transparency group", page=n, level=tlevel))
-    resources(page.Resources, "")
-    operators(page.obj, "")
-    return issues
+    def inline_image(self, im, i: int, where: str, res):
+        d = im.obj
+        cs = d.get("/ColorSpace", d.get("/CS"))
+        mask = bool(d.get("/ImageMask", d.get("/IM", False)))
+        if cs is not None and not isinstance(cs, pikepdf.Array) and str(cs) not in _FAMILIES:
+            named = ((res or {}).get("/ColorSpace") or {}).get(str(cs)) if isinstance(res, pikepdf.Dictionary) else None
+            cs = named if named is not None else cs           # a resource name; unresolvable ones stay as is
+        self.image(f"inline image {i} {where.strip() or 'in the page content'}", cs, mask, False)

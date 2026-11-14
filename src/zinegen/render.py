@@ -213,6 +213,7 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
                       W=book.trim_w, H=book.trim_h, B=book.bleed, fonts=book.fonts,
                       pt={k: _layout.font_pt(book, k) for k in kinds}, lh=_layout.LINE_HEIGHT,
                       icc=icc_uri, icc_components=", ".join(cinfo["icc_components"] or []),
+                      ink=lambda t: ink(t, cinfo["icc_components"] if icc_uri else None),
                       font_faces=font_faces([book.fonts["body"], book.fonts["caption"], book.fonts["title"]]))
     book.out_dir.mkdir(parents=True, exist_ok=True)
     html_path = book.out_dir / "interior.html"
@@ -237,6 +238,19 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     if log:
         log(f"wrote {pdf_path} ({pdf_path.stat().st_size // 1024} KB), {rep['pages']} pages, {len(rep['issues'])} issues")
     return rep
+
+
+def ink(tint: float, components: list[str] | None) -> str:
+    """CSS colour for black ink at `tint` (1 = solid) in the output intent's colour space.
+
+    CMYK intent (or none): `device-cmyk(0 0 0 tint)`, pure K, as on PDF/X-1a. RGB or Gray intent: the same
+    lightness through the intent profile (`color(--press …)`, an ICCBased colour space in the PDF). PDF/X-4 allows
+    a device colour space only when it matches the output intent, so DeviceCMYK text under an RGB intent (the
+    default sRGB proof setup) was not conforming; ICC-based colour is allowed with any intent."""
+    if not components or components == ["c", "m", "y", "k"]:
+        return f"device-cmyk(0 0 0 {tint:g})"
+    g = f"{1 - tint:.3g}"
+    return f"color(--press {' '.join([g] * len(components))})"
 
 
 WORD_JOINER = "⁠"
@@ -376,22 +390,74 @@ def postprocess(pdf_path: Path, book: Book, marks: bool = False, icc: Path | Non
         strict = book.output["standard"] == "pdf/x-1a"
         if not strict:
             _tag_rgb_images(pdf)
-        for page in pdf.pages:
-            cs = page.Resources.get("/ColorSpace")
-            if cs is None:
-                continue
-            content = page.Contents
-            data = content.read_bytes() if not isinstance(content, pikepdf.Array) else b"".join(c.read_bytes() for c in content)
-            used = set(re.findall(rb"/(\S+)\s+(?:cs|CS)\b", data))
-            for name in list(cs.keys()):
-                if name.lstrip("/").encode() not in used:
-                    if strict or str(name).startswith("/lab-"):
-                        del cs[name]
+        prune_color_spaces(pdf, strict)
         set_bleed(pdf, book.bleed)
         if marks:
             cmyk = icc is not None and color.profile_components(icc) == ["c", "m", "y", "k"]
             add_marks(pdf, _layout.crop_marks(book), book.trim_h, cmyk)
         pdf.save(pdf_path)
+
+
+# Colour space names a content stream uses: `/Name cs|CS`, and `/CS /Name` (or `/ColorSpace /Name`) in an
+# inline image dictionary. A match inside a string only keeps a resource, it never drops one.
+_CS_USE = re.compile(rb"/([^\s/\[\]()<>{}%]+)\s+(?:cs|CS)\b|/(?:CS|ColorSpace)\s*/([^\s/\[\]()<>{}%]+)")
+
+
+def _stream_bytes(obj) -> bytes:
+    import pikepdf
+
+    try:
+        if isinstance(obj, pikepdf.Array):
+            return b"\n".join(c.read_bytes() for c in obj)
+        return obj.read_bytes()
+    except pikepdf.PdfError:
+        return b""
+
+
+def prune_color_spaces(pdf, strict: bool):
+    """Drop colour-space resources that WeasyPrint declares but the content never selects: every unused one on
+    PDF/X-1a (`strict`), only its unused `lab-*` spaces otherwise. Done for each page and for every Form
+    XObject it reaches (WeasyPrint draws opacity, SVG and gradients through Forms). A Form without its own
+    /Resources uses its parent's, so the names it selects count as used by the parent; a resource dictionary
+    shared by several pages or Forms keeps every name any of them uses. Each Form is visited once, so
+    self-referencing resources cannot loop."""
+    import pikepdf
+
+    seen: set = set()
+    direct: list = []            # (resources, names used)
+    indirect: dict = {}          # objgen -> (resources, names used by every owner)
+
+    def names(content: bytes) -> set[bytes]:
+        return {a or b for a, b in _CS_USE.findall(content)}
+
+    def collect(res, content: bytes):
+        if not isinstance(res, pikepdf.Dictionary):
+            return
+        used = names(content)
+        for x in (res.get("/XObject") or {}).values():
+            if not isinstance(x, pikepdf.Stream) or str(x.get("/Subtype")) != "/Form":
+                continue
+            own = x.get("/Resources")
+            if own is None:
+                used |= names(_stream_bytes(x))
+            elif not x.is_indirect or x.objgen not in seen:
+                if x.is_indirect:
+                    seen.add(x.objgen)
+                collect(own, _stream_bytes(x))
+        if res.is_indirect:
+            indirect.setdefault(res.objgen, (res, set()))[1].update(used)
+        else:
+            direct.append((res, used))
+
+    for page in pdf.pages:
+        collect(page.Resources, _stream_bytes(page.obj["/Contents"]) if "/Contents" in page.obj else b"")
+    for res, used in direct + list(indirect.values()):
+        cs = res.get("/ColorSpace")
+        if not isinstance(cs, pikepdf.Dictionary):
+            continue
+        for name in list(cs.keys()):
+            if name.lstrip("/").encode() not in used and (strict or str(name).startswith("/lab-")):
+                del cs[name]
 
 
 def set_bleed(pdf, bleed_mm: float):
