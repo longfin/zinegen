@@ -459,6 +459,24 @@ def test_long_caption_is_reported_and_clipped_between_lines(book_dir: Path):
     assert check.check(book)["ok"]                      # a warning, not an error
 
 
+def test_text_space_under_one_line_is_not_overdrawn(book_dir: Path):
+    """A text page whose body gets less than one line of room: the box is cut to 0 lines (not grown past its
+    space into the bottom margin) and the loss is reported as TEXT_CLIPPED."""
+    import re
+    doc = yaml.safe_load((book_dir / "book.yaml").read_text())
+    doc["margins_mm"] = {"top": 96, "bottom": 97, "inside": 16, "outside": 12}     # 17 mm of height on A5
+    doc["pages"][5] = {"template": "text", "heading": "Notes", "text": "Body text that has no room."}
+    (book_dir / "book.yaml").write_text(yaml.safe_dump(doc))
+    book = spec.load(book_dir / "book.yaml")
+    rep = render.render(book)
+    html = (book_dir / "out" / "interior.html").read_text()
+    h = float(re.search(r'data-page="7" data-kind="body" style="[^"]*height:([\d.]+)mm', html).group(1))
+    assert h == 0
+    clipped = [i for i in rep["issues"] if i["code"] == "TEXT_CLIPPED"]
+    assert [(i["page"], i["level"]) for i in clipped] == [(7, "warning")]
+    assert "holds 0" in clipped[0]["message"] and "less than one line high" in clipped[0]["message"]
+
+
 def test_keep_all_joins_korean_words():
     wj = render.WORD_JOINER
     assert render.keep_all("가을 산책") == f"가{wj}을 산{wj}책"

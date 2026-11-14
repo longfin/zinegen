@@ -224,3 +224,25 @@ def test_prune_keeps_names_of_every_user_of_shared_resources():
         page_with(pdf, n, data).obj.Resources = res
     render.prune_color_spaces(pdf, strict=True)
     assert set(res.ColorSpace.keys()) == {"/a", "/b"}
+
+
+# --- render.add_marks ----------------------------------------------------------------------------------------
+
+def test_add_marks_refuses_mixed_trim_sizes():
+    from zinegen import layout
+    marks = layout.Marks(lines=[(-4, 0, -9, 0)], targets=[], slug=10)
+    pdf = pikepdf.new()
+    for w in (100, 100):
+        pdf.add_blank_page(page_size=(w, 200))
+        pdf.pages[-1].obj.TrimBox = [0, 0, w, 200]
+    render.add_marks(pdf, marks, 200 * 25.4 / 72, cmyk=False)
+    form = pdf.pages[0].Resources.XObject.ZgMarks
+    s = 10 * 72 / 25.4
+    assert [float(v) for v in form.BBox] == pytest.approx([-s, -s, 100 + s, 200 + s], abs=0.001)
+
+    pdf = pikepdf.new()
+    for w in (100, 120):
+        pdf.add_blank_page(page_size=(w, 200))
+        pdf.pages[-1].obj.TrimBox = [0, 0, w, 200]
+    with pytest.raises(render.RenderError, match="single trim size"):
+        render.add_marks(pdf, marks, 200 * 25.4 / 72, cmyk=False)

@@ -33,9 +33,11 @@ def line_mm(book: Book, kind: str) -> float:
 
 
 def _whole_lines(book: Book, t: TextEl) -> TextEl:
-    """Cut a text box to a whole number of lines (at least one)."""
+    """Cut a text box to the whole number of lines that fit in its allotted height. A space smaller than one line
+    gets a box of height 0: the text is not printed (rather than drawn over whatever is below the space) and
+    render reports it as TEXT_CLIPPED."""
     lh = line_mm(book, t.kind)
-    t.h = max(1, int(t.h / lh + 1e-6)) * lh
+    t.h = max(0, int(t.h / lh + 1e-6)) * lh
     return t
 
 

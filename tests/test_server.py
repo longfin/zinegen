@@ -313,7 +313,15 @@ def test_fetch_reports_missing(lightroom, tmp_path, monkeypatch):
     (tmp_path / "cache" / f"{A}.jpg").write_bytes(b"")     # A was fetched
     res = call("zg_render", {"book": str(tmp_path)})
     assert res.is_error and B in text(res) and "not in the album or the Lightroom catalog" in text(res)
-    assert "zg_fetch" not in text(res)
+    assert "Replace them" in text(res) and "run `zg_fetch` again to re-check" in text(res)
+
+    # B has been added to the album since (photos.json lists it): the missing list is stale, so render asks
+    # for a fetch instead of a book.yaml change
+    (tmp_path / "photos.json").write_text(json.dumps({"version": 1, "album": {"id": ALBUM},
+                                                      "photos": [{"id": A}, {"id": B}]}))
+    res = call("zg_render", {"book": str(tmp_path)})
+    assert res.is_error and B in text(res) and "not downloaded yet" in text(res) and "zg_fetch" in text(res)
+    assert "Replace them" not in text(res)
 
     # a later fetch that finds everything forgets the missing list
     monkeypatch.setattr(lightroom, "get_json", lambda path: {"resources": [{"id": B, "subtype": "image", "payload": {}}]})

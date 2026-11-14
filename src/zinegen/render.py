@@ -62,15 +62,26 @@ def source_files(book: Book) -> dict[str, Path]:
         else:
             absent.append(pid)
     if absent:
-        # ids the last fetch could not find anywhere: fetching again cannot help, book.yaml must change
-        gone = [pid for pid in absent if pid in book.missing_ids()]
+        # ids the last fetch could not find anywhere: book.yaml must change, unless the photo has been added to
+        # the album since (it is in photos.json now), in which case the missing list is stale and a fetch helps
+        gone = [pid for pid in absent if pid in book.missing_ids() and pid not in _album_ids(book)]
         if gone:
             raise FileNotFoundError(f"{len(gone)} photo id(s) in book.yaml are not in the album or the Lightroom "
                                     f"catalog (the last fetch reported them missing): {', '.join(gone)}. Replace "
-                                    "them with ids from the album (photos.json) or remove those pages.")
+                                    "them with ids from the album (photos.json) or remove those pages; if you "
+                                    "have added them to the album since, run `zinegen fetch` again to re-check.")
         raise FileNotFoundError(f"{len(absent)} photo(s) not downloaded yet ({', '.join(absent)}); "
                                 "run `zinegen fetch` first")
     return files
+
+
+def _album_ids(book: Book) -> set[str]:
+    """Photo ids in photos.json (the album as last drafted), or none when it is absent or unreadable."""
+    try:
+        doc = json.loads((book.root / "photos.json").read_text())
+        return {p["id"] for p in doc.get("photos", []) if isinstance(p, dict) and "id" in p}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return set()
 
 
 def resolve_icc(book: Book) -> Path | None:
@@ -231,7 +242,11 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     document.write_pdf(pdf_path, pdf_variant=std, output_intent="--press" if icc_uri else None,
                        jpeg_quality=None, dpi=None, optimize_images=False)
     _verify_images(pdf_path, {im.photo: files[im.photo] for pl in pages for im in pl.images})
-    postprocess(pdf_path, book, marks=book.marks if marks is None else marks, icc=icc)
+    try:
+        postprocess(pdf_path, book, marks=book.marks if marks is None else marks, icc=icc)
+    except RenderError:
+        pdf_path.unlink(missing_ok=True)
+        raise
     rep["pdf"] = str(pdf_path)
     rep["html"] = str(html_path)
     (book.out_dir / "report.json").write_text(json.dumps(rep, indent=2, ensure_ascii=False))
@@ -297,9 +312,12 @@ def _text_overflow(document) -> list[Issue]:
                 kind = el.get("data-kind")
                 cut = " ".join("".join(t.text for t in lb.descendants() if isinstance(t, boxes.TextBox)).strip()
                                for lb in lines[fit:]).replace(WORD_JOINER, "")
+                if fit == 0:
+                    hint = ". The space for it is less than one line high: use a smaller type size or more room"
+                else:
+                    hint = ". Shorten the text" + (" (a caption box holds 2 lines)" if kind == "caption" else "")
                 issues.append(Issue("TEXT_CLIPPED", f"{kind} needs {len(lines)} lines, its box holds {fit}: "
-                                    f"{cut[:40]!r}{'…' if len(cut) > 40 else ''} is not printed. Shorten the text"
-                                    + (" (a caption box holds 2 lines)" if kind == "caption" else ""),
+                                    f"{cut[:40]!r}{'…' if len(cut) > 40 else ''} is not printed{hint}",
                                     page=int(el.get("data-page"))))
     return issues
 
@@ -521,14 +539,20 @@ def add_marks(pdf, marks: _layout.Marks, trim_h: float, cmyk: bool):
         h = r + 1.0
         ops.append(f"{p(cx - h, cy)} m {p(cx + h, cy)} l S {p(cx, cy - h)} m {p(cx, cy + h)} l S")
     s = marks.slug * pt
-    form = pikepdf.Stream(pdf, "\n".join(ops).encode())     # every page has the same trim size: one form
+    # One form for every page: the marks (and its BBox) are laid out for one trim size, so a page of another
+    # size would get marks in the wrong place. The book has one trim size; refuse anything else.
+    trims = [[float(v) for v in page.obj["/TrimBox"]] for page in pdf.pages]
+    w, h = trims[0][2] - trims[0][0], trims[0][3] - trims[0][1]
+    if abs(h - trim_h * pt) > 0.01 or any(abs(t[2] - t[0] - w) > 0.01 or abs(t[3] - t[1] - h) > 0.01 for t in trims):
+        raise RenderError("crop marks are drawn for a single trim size, but the pages' TrimBoxes differ "
+                          f"({sorted({(round(t[2] - t[0], 2), round(t[3] - t[1], 2)) for t in trims})} pt)")
+    form = pikepdf.Stream(pdf, "\n".join(ops).encode())
     form["/Type"] = pikepdf.Name.XObject
     form["/Subtype"] = pikepdf.Name.Form
     form["/Resources"] = pikepdf.Dictionary(ColorSpace=pikepdf.Dictionary(Reg=reg))
+    form["/BBox"] = pikepdf.Array([round(v, 3) for v in (-s, -s, w + s, h + s)])
     form = pdf.make_indirect(form)
-    for page in pdf.pages:
-        tb = [float(v) for v in page.obj["/TrimBox"]]
-        form["/BBox"] = pikepdf.Array([round(v, 3) for v in (-s, -s, tb[2] - tb[0] + s, tb[3] - tb[1] + s)])
+    for page, tb in zip(pdf.pages, trims, strict=True):
         page.obj["/MediaBox"] = pikepdf.Array([round(v, 3) for v in (tb[0] - s, tb[1] - s, tb[2] + s, tb[3] + s)])
         if "/CropBox" in page.obj:
             del page.obj["/CropBox"]
