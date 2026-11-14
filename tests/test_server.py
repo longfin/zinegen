@@ -111,7 +111,7 @@ def test_render_before_fetch_names_tool(tmp_path):
     pytest.importorskip("weasyprint")
     write_book(tmp_path)
     res = call("zg_render", {"book": str(tmp_path)})
-    assert res.is_error and "missing cached photo" in text(res) and "`zg_fetch`" in text(res)
+    assert res.is_error and "2 photo(s) not downloaded yet" in text(res) and "`zg_fetch`" in text(res)
 
 
 @pytest.mark.parametrize("tool,args", [
@@ -128,6 +128,21 @@ def test_bad_arguments_rejected(tool, args):
 def test_spine():
     res = call("zg_spine", {"pages": 100, "caliper_um": 110})
     assert not res.is_error and text(res).startswith("5.5 mm")
+
+
+@pytest.mark.parametrize("pages,binding,rounded,mm", [
+    (23, "perfect", 24, 1.44),                 # 12 sheets × 120 µm, not 11.5 sheets
+    (24, "hardcover", 32, 1.92 + 2 * 2 + 2),   # 16 sheets + two 2 mm boards + 2 mm hinge allowance
+    (24, "perfect", 24, 1.44),
+])
+def test_spine_uses_the_rounded_page_count(capsys, pages, binding, rounded, mm):
+    """The width is computed for the page count the message announces (CLI and MCP share cli.spine)."""
+    assert cli.spine(pages, 120, binding) == (round(mm, 2), rounded)
+    res = text(call("zg_spine", {"pages": pages, "caliper_um": 120, "binding": binding}))
+    assert res.startswith(f"{round(mm, 2)} mm (for {rounded} pages")
+    assert (f"{pages} rounded up" in res) == (pages != rounded)
+    assert cli.main(["spine", "--pages", str(pages), "--caliper", "120", "--binding", binding]) == 0
+    assert capsys.readouterr().out.strip() == res
 
 
 def test_album_name_fails_fast(lightroom, monkeypatch):
@@ -161,6 +176,7 @@ def test_init_writes_nothing_to_stdout(lightroom, tmp_path, capfd, monkeypatch):
     assert json.loads((path.parent / "photos.json").read_text())["photos"][0]["id"] == A
 
     again = call("zg_init_book", {"album_id": ALBUM, "standard": "pdf/x-4"})
+    assert "warning: book directory named 'Autumn_walk'" in text(res)     # the space became _, and it says so
     assert again.is_error and "already exists; pass force=true to overwrite" in text(again)
     assert not call("zg_init_book", {"album_id": ALBUM, "standard": "pdf/x-4", "force": True}).is_error
 
@@ -290,6 +306,21 @@ def test_fetch_reports_missing(lightroom, tmp_path, monkeypatch):
     assert data["missing"] == [B] and data["outside_album"] == []
     assert "zg_render" in data["warning"]
 
+    # render then names the id as not in Lightroom instead of sending the agent back to zg_fetch
+    from zinegen.render import _setup_dyld
+    _setup_dyld()
+    pytest.importorskip("weasyprint")
+    (tmp_path / "cache" / f"{A}.jpg").write_bytes(b"")     # A was fetched
+    res = call("zg_render", {"book": str(tmp_path)})
+    assert res.is_error and B in text(res) and "not in the album or the Lightroom catalog" in text(res)
+    assert "zg_fetch" not in text(res)
+
+    # a later fetch that finds everything forgets the missing list
+    monkeypatch.setattr(lightroom, "get_json", lambda path: {"resources": [{"id": B, "subtype": "image", "payload": {}}]})
+    monkeypatch.setattr(compat, "_photo", lambda asset: photo(asset["id"]))
+    assert json.loads(text(call("zg_fetch", {"book": str(tmp_path)})))["missing"] == []
+    assert not (tmp_path / "cache" / "missing.json").exists()
+
 
 def test_fetch_errors_hide_catalog_id(lightroom, tmp_path, monkeypatch):
     write_book(tmp_path, pages=[{"template": "margin", "photo": A}])
@@ -332,6 +363,38 @@ def test_proof_out_of_range(fifteen_spreads):
     assert head.startswith("1 of 15 spreads (15)")
     assert "out of range (the book has spreads 1-15): 99, 0" in head
     assert [c.text for c in res.content[1:] if c.type == "text"] == ["spread 15: page 28"]
+
+
+def test_proof_only_out_of_range_is_an_error(fifteen_spreads, monkeypatch):
+    res = call("zg_proof", {"book": str(fifteen_spreads), "spreads": [16, 0]})
+    assert res.is_error and "no such spread: 16, 0" in text(res) and "1-15" in text(res)
+
+    # with a PDF to count, Ghostscript is not even run (proof/ is left as it was)
+    import pikepdf
+
+    from zinegen import proof
+    (fifteen_spreads / "out").mkdir()
+    pdf = pikepdf.new()
+    for _ in range(28):
+        pdf.add_blank_page()
+    pdf.save(fifteen_spreads / "out" / "interior.pdf")
+    monkeypatch.setattr(proof, "proof", lambda *a, **k: pytest.fail("proof rendered"))
+    res = call("zg_proof", {"book": str(fifteen_spreads), "spreads": [16]})
+    assert res.is_error and "no such spread: 16" in text(res) and "spreads 1-15" in text(res)
+
+
+def test_unknown_tool_argument_is_rejected():
+    res = call("zg_spine", {"pages": 24, "caliper_um": 100, "bogus": 1})
+    assert res.is_error and "bogus" in text(res) and "Extra inputs are not permitted" in text(res)
+    res = call("zg_spine", {"pages": -1, "caliper_um": 100})
+    assert res.is_error and "errors.pydantic.dev" not in text(res)
+
+
+def test_tool_schemas_forbid_extra_arguments():
+    async def run():
+        async with Client(server.mcp) as c:
+            return (await c.list_tools()).tools
+    assert all(t.input_schema.get("additionalProperties") is False for t in anyio.run(run))
 
 
 # ---------------------------------------------------------------- CLI

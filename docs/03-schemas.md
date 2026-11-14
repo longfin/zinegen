@@ -21,8 +21,8 @@ Unknown keys are errors. Units are in the key name: `_mm`, `_um`, `_pt`.
 | `margins_mm.{top,bottom,inside,outside}` | number | 14/16/16/12 | inside/outside are mirrored per page |
 | `fonts.{body,caption,title}` | fontconfig family | Nanum Myeongjo / Nanum Gothic / Nanum Myeongjo | |
 | `type.{body_pt,caption_pt,title_pt}` | number | 10 / 7.5 / 24 | |
-| `page_numbers` | bool | false | not on title/blank/full-bleed pages |
-| `marks` | bool | true | crop + registration marks |
+| `page_numbers` | bool | false | folio at the bottom outside corner of every page except `title`, `blank` (including inserted/padding blanks), `full-bleed`, and both pages of `spread-full`/`spread-margin` |
+| `marks` | bool | true | crop marks at the trim corners and registration targets at the middle of each edge, drawn outside the bleed (they start 1 mm beyond the BleedBox) in the registration colour (Separation `/All`), with the MediaBox enlarged to hold them; TrimBox and BleedBox are unchanged. `false`: MediaBox = BleedBox, no marks |
 | `output.standard` | `pdf/x-1a` `pdf/x-4` | pdf/x-1a | |
 | `output.icc` | path or profile name, or null | null | required for x-1a; also the output intent for x-4. A value containing `/` or `\`, starting with `~` or ending in `.icc`/`.icm` is a file path; a relative one is resolved against the book directory (where book.yaml is), never the working directory. Any other value is a profile name, searched only in the profile directories (`color.ADOBE_PROFILE_DIRS`) as `<name>`, `<name>.icc`, `<name>.icm` (a path that is not an existing file is looked up there too). Set but unresolvable: render fails |
 | `output.intent` | perceptual / relative-colorimetric / saturation / absolute-colorimetric | perceptual | |
@@ -119,17 +119,21 @@ they differ only on x-1a when `max_dpi` downsampled the photo. Layout geometry a
 | `NO_OUTPUT_PROFILE` | error | render: x-4 with `output.icc` unset (a set but unresolvable profile fails the render instead) |
 | `DPI_ABOVE_NEED` | info | render: x-4 placements above 1.5 × `output.max_dpi` (default 350); x-4 embeds source bytes unchanged. Suggests a smaller `source.size` only if every placement stays ≥ 300 dpi with it |
 | `ORIENTATION_REENCODED` | warning | render: x-4 photo with an EXIF orientation tag; rotated and JPEG-encoded once (`output.jpeg_quality`) to embed it upright, so it is not the source bytes. x-1a applies the orientation during its single CMYK conversion (no issue) |
+| `TEXT_CLIPPED` | warning | render: a text box (caption, body, colophon, title, ...) has more lines than fit; `page` is set. Boxes hold a whole number of lines (a caption two), so the cut falls between lines |
+| `DISPLAY_OUTPUT_PROFILE` | warning | render: `output.icc` is not a printer-class (`prtr`) ICC profile, e.g. the bundled `sRGB2014.icc` (display class). Valid PDF/X-4, but the output intent describes a screen |
 | `NO_OUTPUT_INTENT`, `NO_DEST_PROFILE`, `NO_PDFX_VERSION`, `PDF_VERSION` | error | check |
 | `NO_TRIMBOX`, `TRIMBOX_SIZE`, `BLEED_SMALL` | error | check |
 | `NO_BLEEDBOX` | warning | check |
-| `IMAGE_COLORSPACE`, `IMAGE_SMASK`, `FONT_NOT_EMBEDDED` | error | check |
-| `TRANSPARENCY` | error on x-1a, warning on x-4 | check |
+| `IMAGE_COLORSPACE`, `IMAGE_SMASK`, `FONT_NOT_EMBEDDED` | error | check (images and fonts in nested Form XObjects included) |
+| `TRANSPARENCY` | error on x-1a, warning on x-4 | check: ExtGState alpha (`CA`/`ca` < 1), blend mode, soft mask, or a transparency group, on the page or in any Form XObject or tiling pattern it reaches |
+| `VECTOR_COLORSPACE` | error | check: vector colour the standard does not allow, in the page or any nested Form/pattern: `rg`/`RG`/`cs /DeviceRGB` and colour space resources that are (or have an alternate/base that is) RGB, Lab or ICC-based on x-1a; DeviceRGB on x-4 with a CMYK output intent |
 
 ## Not frozen (yet)
 
 - `cache/index.json` (rendition cache sidecar): internal until it is shared with lr-mcp (issue #11).
 - `cache/cmyk/*.json`: conversion sidecar keyed by content hash.
 - `cache/upright/`: upright copies of EXIF-rotated photos for x-4.
+- `cache/missing.json`: ids the last fetch did not find in Lightroom, so render can name them.
 - Proof file naming `proof/spread-NN.png` / `page-NNN.png`, a layout export and a comments file: to be fixed
   together when the review GUI is started.
 
@@ -145,3 +149,8 @@ they differ only on x-1a when `max_dpi` downsampled the photo. Layout geometry a
 - v1, added (no version bump): issue code `ORIENTATION_REENCODED`. Clarified: a relative `output.icc` is
   resolved against the book directory (it used to depend on the working directory); `px`/`source_px`
   are sizes as displayed, with EXIF orientation applied.
+- v1, added (no version bump): issue codes `TEXT_CLIPPED`, `DISPLAY_OUTPUT_PROFILE`, `VECTOR_COLORSPACE`.
+  Corrected to match the schema text: `marks: true` now draws the marks outside the bleed in the
+  registration colour and enlarges the MediaBox (0.1.0 used WeasyPrint's marks: DeviceRGB, a transparency
+  group and inside the bleed, with MediaBox = BleedBox). TrimBox/BleedBox are unchanged. `check.json` now
+  looks into nested Form XObjects, so a PDF written by 0.1.0 with marks fails the x-1a check.

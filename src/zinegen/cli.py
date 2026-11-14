@@ -109,7 +109,7 @@ def init_book(album: str, dir: str | None = None, standard: str = "pdf/x-1a", ic
             raise ValueError(f"ICC profile {icc!r} not found (a file path, relative paths resolved against the book "
                              f"directory {root}, or a name searched in "
                              f"{', '.join(str(d) for d in color.ADOBE_PROFILE_DIRS)})")
-        color.check_profile(prof, f"ICC profile {icc!r} resolves to")
+        color.check_profile(prof, color.profile_label("ICC profile", icc, prof))
         if standard == "pdf/x-1a" and color.profile_components(prof) != ["c", "m", "y", "k"]:
             raise ValueError(f"pdf/x-1a needs a CMYK output profile; {prof.name} is not CMYK")
     out = root / "book.yaml"
@@ -117,6 +117,9 @@ def init_book(album: str, dir: str | None = None, standard: str = "pdf/x-1a", ic
         raise FileExistsError(f"{out} already exists")
     root.mkdir(parents=True, exist_ok=True)
     warnings = []
+    if not dir and name != (info["name"] or album):
+        warnings.append(f"book directory named {name!r} (the album name with characters other than letters, digits, "
+                        "'-' and '_' replaced by '_'); pass dir to choose another")
     icc = icc or next((p for p in ("JapanColor2001Coated", "CoatedFOGRA39") if color.find_profile(p)), None)
     if standard == "pdf/x-1a" and not icc:
         warnings.append("no CMYK press profile found; set output.icc in book.yaml (path or profile name) before rendering")
@@ -161,6 +164,7 @@ def fetch_book(book: spec.Book, force: bool = False, log=None) -> dict:
     res = compat.fetch_renditions(photos, book.cache_dir, book.source.get("size", "fullsize"), force, log=log)
     res["outside_album"] = [i for i in outside if i in found]
     res["missing"] = [i for i in wanted if i not in found]
+    spec.record_missing(book, res["missing"])
     return res
 
 
@@ -206,8 +210,9 @@ def cmd_build(a):
     return cmd_check(a)
 
 
-def spine(pages: int, caliper_um: float, binding: str = "perfect", board_mm: float = 2.0) -> float:
-    """Validated spine width in mm; shared by `zinegen spine` and zg_spine."""
+def spine(pages: int, caliper_um: float, binding: str = "perfect", board_mm: float = 2.0) -> tuple[float, int]:
+    """Validated spine width in mm and the page count it is computed for (`pages` rounded up to the binding's
+    page multiple: a book cannot have a part sheet or signature); shared by `zinegen spine` and zg_spine."""
     if pages <= 0:
         raise ValueError(f"pages must be greater than 0, not {pages}")
     if caliper_um <= 0:
@@ -216,11 +221,19 @@ def spine(pages: int, caliper_um: float, binding: str = "perfect", board_mm: flo
         raise ValueError(f"board must be 0 mm or more, not {board_mm}")
     if binding not in presets.BINDINGS:
         raise ValueError(f"binding must be one of {', '.join(presets.BINDINGS)}, not {binding!r}")
-    return presets.spine_mm(pages, caliper_um, binding, board_mm)
+    rounded = presets.round_up_pages(pages, binding)
+    return presets.spine_mm(rounded, caliper_um, binding, board_mm), rounded
+
+
+def spine_message(pages: int, caliper_um: float, binding: str = "perfect", board_mm: float = 2.0) -> str:
+    mm, rounded = spine(pages, caliper_um, binding, board_mm)
+    note = f"for {rounded} pages, {pages} rounded up to a multiple of {presets.BINDINGS[binding]['page_multiple']}" \
+        if rounded != pages else f"for {pages} pages"
+    return f"{mm} mm ({note}, {binding})"
 
 
 def cmd_spine(a):
-    print(f"{spine(a.pages, a.caliper, a.binding, a.board)} mm")
+    print(spine_message(a.pages, a.caliper, a.binding, a.board))
 
 
 def cmd_mcp(_):

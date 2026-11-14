@@ -16,6 +16,8 @@ CODES = {
     "NO_OUTPUT_PROFILE": "error",
     "DPI_ABOVE_NEED": "info",
     "ORIENTATION_REENCODED": "warning",
+    "TEXT_CLIPPED": "warning",
+    "DISPLAY_OUTPUT_PROFILE": "warning",
     # pdf check
     "NO_OUTPUT_INTENT": "error",
     "NO_DEST_PROFILE": "error",
@@ -28,6 +30,7 @@ CODES = {
     "IMAGE_COLORSPACE": "error",
     "IMAGE_SMASK": "error",
     "TRANSPARENCY": "error",
+    "VECTOR_COLORSPACE": "error",
     "FONT_NOT_EMBEDDED": "error",
 }
 

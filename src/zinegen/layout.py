@@ -12,7 +12,31 @@ from .presets import BINDINGS
 from .spec import Book
 
 CAPTION_GAP_MM = 2.0     # space between a photo (block) and its caption
+CAPTION_LINES = 2        # lines a caption box holds
 MIN_PHOTO_BOX_MM = 5.0   # smaller photo boxes mean the margins/gap/caption leave no room: NO_ROOM, nothing placed
+PT_MM = 25.4 / 72
+# CSS line-height per text kind (the template uses these). Text boxes are cut to a whole number of lines, so
+# text that does not fit is clipped between lines, never through one; render reports it as TEXT_CLIPPED.
+LINE_HEIGHT = {"title": 1.3, "subtitle": 1.5, "heading": 1.4, "body": 1.75, "caption": 1.5, "colophon": 1.6,
+               "folio": 1.2}
+
+
+def font_pt(book: Book, kind: str) -> float:
+    """Font size of a text kind in pt (the template uses these)."""
+    t = book.type
+    return float({"title": t["title_pt"], "subtitle": t["body_pt"] + 1, "heading": t["body_pt"] + 4,
+                  "body": t["body_pt"]}.get(kind, t["caption_pt"]))
+
+
+def line_mm(book: Book, kind: str) -> float:
+    return font_pt(book, kind) * PT_MM * LINE_HEIGHT[kind]
+
+
+def _whole_lines(book: Book, t: TextEl) -> TextEl:
+    """Cut a text box to a whole number of lines (at least one)."""
+    lh = line_mm(book, t.kind)
+    t.h = max(1, int(t.h / lh + 1e-6)) * lh
+    return t
 
 
 @dataclass
@@ -100,8 +124,8 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
     (their aspect ratio); `render` may embed a downsampled file and sets `ImageEl.px` to its size afterwards."""
     W, H, B = book.trim_w, book.trim_h, book.bleed
     full = (-B, -B, W + 2 * B, H + 2 * B)
-    cap_pt = float(book.type["caption_pt"])
-    cap_h = cap_pt * 0.3528 * 1.5 * 2 + CAPTION_GAP_MM   # two caption lines + gap, in mm
+    cap_lines = line_mm(book, "caption") * CAPTION_LINES
+    cap_h = cap_lines + CAPTION_GAP_MM                   # caption lines + gap, in mm
     out: list[PageLayout] = []
 
     def page_box(index):
@@ -138,7 +162,7 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
                     x, y, w, h = _contain(box, px, ("center", valign))
                     pl.images.append(ImageEl(d["photo"], x, y, w, h, box, px))
                 if caption:
-                    pl.texts.append(TextEl("caption", caption, left, t + bh - cap_h + CAPTION_GAP_MM, bw, cap_h,
+                    pl.texts.append(TextEl("caption", caption, left, t + bh - cap_h + CAPTION_GAP_MM, bw, cap_lines,
                                            d.get("caption_align", "left")))
             elif p.template == "pair":
                 ids = d["photos"]
@@ -162,7 +186,7 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
                         # across the full margin-box width: the box only holds two lines, and a narrow block
                         # (two portraits stacked) would otherwise clip a caption that fits at full width
                         y1 = max(im.y + im.h for im in pl.images)
-                        pl.texts.append(TextEl("caption", caption, left, y1 + CAPTION_GAP_MM, bw, cap_h))
+                        pl.texts.append(TextEl("caption", caption, left, y1 + CAPTION_GAP_MM, bw, cap_lines))
             if book.page_numbers and p.template not in ("title", "blank", "full-bleed"):
                 pl.texts.append(TextEl("folio", str(p.index), left, H - float(book.margins["bottom"]) + 6, bw, 6,
                                        "right" if pl.recto else "left"))
@@ -184,9 +208,46 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
             caption = str(d.get("caption") or "").strip()
             if caption and p.template == "spread-margin":
                 left, t, bw, bh = page_box(p.index + 1)
-                right_pl.texts.append(TextEl("caption", caption, left, H - float(book.margins["bottom"]) + 3, bw, cap_h, "right"))
+                right_pl.texts.append(TextEl("caption", caption, left, H - float(book.margins["bottom"]) + 3, bw, cap_lines, "right"))
             out += [left_pl, right_pl]
+    for pl in out:
+        for t in pl.texts:
+            _whole_lines(book, t)
     return out
+
+
+MARK_OFFSET_MM = 1.0     # gap between the bleed edge and the start of a crop mark
+MARK_LENGTH_MM = 5.0     # crop mark length
+MARK_TARGET_R_MM = 1.5   # registration target circle radius
+MARK_SLUG_MM = 1.0       # MediaBox margin beyond the marks
+
+
+@dataclass
+class Marks:
+    """Crop marks and registration targets outside the bleed, in page mm (origin at the top-left trim
+    corner, y down, like every other element). `slug` is how far the MediaBox extends beyond the trim."""
+    lines: list[tuple[float, float, float, float]]   # x0, y0, x1, y1
+    targets: list[tuple[float, float, float]]        # cx, cy, r (circle plus cross hair)
+    slug: float
+
+
+def crop_marks(book: Book) -> Marks:
+    """Crop marks at the four trim corners and a registration target at the middle of each edge. Everything
+    starts MARK_OFFSET_MM beyond the bleed edge, so no mark is inside the BleedBox."""
+    W, H, B = book.trim_w, book.trim_h, book.bleed
+    a = B + MARK_OFFSET_MM            # distance from the trim edge to the start of a mark
+    z = a + MARK_LENGTH_MM            # ... and to its end
+    lines = []
+    for x in (0.0, W):
+        sx = -1 if x == 0 else 1      # direction away from the page
+        for y in (0.0, H):
+            sy = -1 if y == 0 else 1
+            lines.append((x + sx * a, y, x + sx * z, y))     # horizontal mark on the trim line y
+            lines.append((x, y + sy * a, x, y + sy * z))     # vertical mark on the trim line x
+    m = (a + z) / 2
+    targets = [(W / 2, -m, MARK_TARGET_R_MM), (W / 2, H + m, MARK_TARGET_R_MM),
+               (-m, H / 2, MARK_TARGET_R_MM), (W + m, H / 2, MARK_TARGET_R_MM)]
+    return Marks(lines, targets, z + MARK_SLUG_MM)
 
 
 REPORT_VERSION = 1

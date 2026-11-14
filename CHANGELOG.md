@@ -4,7 +4,9 @@
 
 **Rebuild PDFs made with 0.1.0.** WeasyPrint re-encoded every embedded JPEG in 0.1.0 (a second lossy
 generation on PDF/X-1a, and on PDF/X-4 the source bytes were not kept), and PDF/X-4 tagged Display P3 photos
-as sRGB. Both are fixed; render again to get the intended output.
+as sRGB. With the default `marks: true`, 0.1.0 also drew the crop marks in DeviceRGB inside a transparency
+group, inside the bleed, and `check` did not notice. All of this is fixed; render again to get the intended
+output.
 
 ### Changed
 
@@ -37,6 +39,33 @@ as sRGB. Both are fixed; render again to get the intended output.
 
 ### Fixed
 
+- Crop marks (`marks: true`, the default) are PDF/X-safe and outside the bleed, as the schema says. 0.1.0 used
+  WeasyPrint's `marks: crop cross`, which draws an SVG with `fill="transparent" stroke="black"`: a Form XObject
+  with a transparency group, an ExtGState with `ca 0` and DeviceRGB strokes, inside the bleed (MediaBox =
+  BleedBox), on both standards. zinegen now draws the marks itself in the registration colour (Separation
+  `/All`; DeviceCMYK alternate for a CMYK output intent, DeviceGray otherwise), without transparency, starting
+  1 mm outside the BleedBox, and enlarges the MediaBox to hold them.
+- `check` looks into nested Form XObjects and tiling patterns (transparency groups, ExtGState alpha, soft
+  masks and blend modes, images, fonts) and at the colour operators of every content stream, so RGB vector
+  colour on PDF/X-1a is reported (`VECTOR_COLORSPACE`) instead of passing.
+- `zinegen spine` / `zg_spine` compute the width for the rounded page count they announce (23 pages perfect
+  bound were reported "rounded to 24" with the 23-page width; hardcover 24 → 32 likewise).
+- Text that does not fit its box is cut between lines instead of through the middle of a glyph (every text box
+  holds a whole number of lines; a caption two), and reported as `TEXT_CLIPPED`.
+- Korean text breaks between words only (`word-break: keep-all`, which WeasyPrint ignores, is emulated with
+  word joiners); a word wider than its box still breaks (`overflow-wrap: anywhere`).
+- Rendering a book whose photo id the last fetch reported missing says that the id is not in the album or the
+  catalog, instead of asking for another fetch.
+- An album id that is well formed but not in the catalog is reported in a sentence, not as Lightroom's raw 404
+  response.
+- `zg_proof` with only out-of-range spread numbers is an error (and, when the PDF can be read, does not run
+  Ghostscript).
+- MCP tools reject unknown arguments (they were ignored) and their input schemas say so
+  (`additionalProperties: false`); argument errors no longer end with a pydantic documentation URL.
+- ICC error messages: no `<name>.icc.icc` candidate for a name that already ends in `.icc`, and an absolute
+  path is not printed twice.
+- `zinegen init` / `zg_init_book` say when the default book directory name differs from the album name
+  (characters other than letters, digits, `-` and `_` become `_`).
 - `pair` captions sit directly under the two photos instead of in the bottom margin, where they ran into the
   page number.
 - Photos with an EXIF orientation are placed upright with the right proportions on both standards (layout used
@@ -61,6 +90,10 @@ as sRGB. Both are fixed; render again to get the intended output.
 - Issue codes `NO_ROOM` (margins, `gap_mm` or caption leave no room for a photo; the page's photos are not placed),
   `NO_OUTPUT_PROFILE`, `DPI_ABOVE_NEED` (PDF/X-4 photos far above print resolution, with a `source.size` hint
   when it is safe) and `ORIENTATION_REENCODED`.
+- Issue codes `TEXT_CLIPPED`, `VECTOR_COLORSPACE` and `DISPLAY_OUTPUT_PROFILE` (a warning when `output.icc` is
+  not a printer-class profile, e.g. the bundled sRGB on PDF/X-4).
+- The skill documents `page_numbers` (and which pages get folios), `marks`, `valign`, `caption_align`, the
+  font and type keys, and how to deliver both PDF/X standards from one book directory.
 - Trim presets `SINGUK` (신국판, 152×225) and `CROWN176` (크라운판, 176×248).
 - `zg_proof` returns at most 12 spreads per call and says which spreads were left out and how to request them,
   and labels each image with its pages.

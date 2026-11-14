@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import json
+import os
 import re
 import subprocess
 import sys
@@ -27,6 +28,10 @@ from pydantic import Field
 from . import cli, presets, spec
 
 MAX_PROOF_IMAGES = 12
+
+# Argument validation errors reach the agent as pydantic's text; its "For further information visit
+# https://errors.pydantic.dev/..." line is noise there. pydantic-core reads this when it first formats an error.
+os.environ.setdefault("PYDANTIC_ERRORS_INCLUDE_URL", "0")
 
 _STDIO_MAIN = False   # set by main(); in-process clients (tests) leave sys.stdout alone
 _wire_stdout = None   # the replaced sys.stdout, kept alive: in mcp's fallback the transport writes to its buffer
@@ -133,7 +138,8 @@ def zg_spec_help() -> str:
     lines += ["every page item may carry `note` (free text, ignored by the renderer)"]
     lines += ["", "# top-level keys (book.yaml must start with `version: 1`; unknown keys are rejected)", "title, trim {preset|width_mm,height_mm}, bleed_mm, binding, paper {caliper_um}, "
               "margins_mm {top,bottom,inside,outside}, fonts {body,caption,title}, type {body_pt,caption_pt,title_pt}, "
-              "page_numbers, marks, output {standard pdf/x-1a|pdf/x-4, icc (name, or path relative to the book directory), intent, jpeg_quality, max_dpi (x-1a downsampling target, default 350, null = keep all pixels)}, source {album_id,size}, pages[]"]
+              "page_numbers (default false; folios on every page except title, blank, full-bleed and spreads), "
+              "marks (default true; crop marks outside the bleed), output {standard pdf/x-1a|pdf/x-4, icc (name, or path relative to the book directory), intent, jpeg_quality, max_dpi (x-1a downsampling target, default 350, null = keep all pixels)}, source {album_id,size}, pages[]"]
     return "\n".join(lines)
 
 
@@ -236,6 +242,18 @@ def _spread_pages(n: int, page_count: int) -> str:
     return f"page {pages[0]}" if pages else "pages ? (out/interior.pdf does not match book.yaml; zg_render again)"
 
 
+def _pdf_spreads(b: spec.Book) -> int | None:
+    """Spread count of out/interior.pdf (page 1 alone, then pairs), or None when it cannot be read; proof()
+    reports a missing or broken PDF itself."""
+    import pikepdf
+    try:
+        with pikepdf.open(b.out_dir / "interior.pdf") as pdf:
+            pages = len(pdf.pages)
+    except (OSError, pikepdf.PdfError):
+        return None
+    return 1 + pages // 2 if pages else 0
+
+
 @_tool
 def zg_proof(
     book: BookArg,
@@ -251,6 +269,12 @@ def zg_proof(
     """
     from . import proof
     b = _book(book)
+    if spreads:
+        # checked before Ghostscript runs, so a call that can return nothing leaves proof/ as it was
+        n = _pdf_spreads(b)
+        if n is not None and not any(0 < s <= n for s in spreads):
+            raise ToolError(f"no such spread: {', '.join(map(str, spreads))} (out/interior.pdf has spreads 1-{n}; "
+                            "spread 1 is page 1, spread n is pages 2n-2 and 2n-1)")
     files = proof.proof(b, dpi, log=cli.log)
     total = len(files)
     if not total:
@@ -258,6 +282,8 @@ def zg_proof(
     wanted = list(dict.fromkeys(spreads)) if spreads else list(range(1, total + 1))
     bad = [n for n in wanted if not 0 < n <= total]
     wanted = [n for n in wanted if 0 < n <= total]
+    if not wanted:
+        raise ToolError(f"no such spread: {', '.join(map(str, bad))} (the book has spreads 1-{total})")
     shown, rest = wanted[:MAX_PROOF_IMAGES], wanted[MAX_PROOF_IMAGES:]
     head = [f"{len(shown)} of {total} spreads" + (f" ({', '.join(map(str, shown))})" if spreads else "")
             + f"; proofs in {b.proof_dir}"]
@@ -297,7 +323,20 @@ def zg_spine(
     board_mm: Annotated[float, Field(ge=0, description="Hardcover board thickness in mm")] = 2.0,
 ) -> str:
     """Spine width in mm from page count and paper caliper (µm). Hardcover adds boards."""
-    return f"{cli.spine(pages, caliper_um, binding, board_mm)} mm (pages rounded to {presets.round_up_pages(pages, binding)} for {binding})"
+    return cli.spine_message(pages, caliper_um, binding, board_mm)
+
+
+def _reject_unknown_arguments():
+    """An argument the tool does not have (`spread` for `spreads`, `standard` on zg_render) is an error, not
+    silently dropped: forbid extra fields in each tool's argument model and say so in its input schema."""
+    for tool in mcp._tool_manager.list_tools():
+        model = tool.fn_metadata.arg_model
+        model.model_config["extra"] = "forbid"
+        model.model_rebuild(force=True)
+        tool.parameters["additionalProperties"] = False
+
+
+_reject_unknown_arguments()
 
 
 def main():

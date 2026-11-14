@@ -141,3 +141,19 @@ def test_fetch_renditions_concurrent_writers_of_one_photo(tmp_path, monkeypatch)
     assert [r["errors"] for r in results] == [{}, {}]
     assert (tmp_path / f"{_Photo(0).id}.jpg").read_bytes() == b"jpeg"
     assert not list(tmp_path.glob(".*.part"))
+
+
+@pytest.mark.parametrize("status, expected", [
+    (404, "album " + "d" * 32 + " not found in the Lightroom catalog"),
+    (500, "returned 500"),                    # anything else keeps lr-mcp's message
+])
+def test_album_info_not_found(monkeypatch, status, expected):
+    """A well-formed id of no album: a sentence, not lr-mcp's raw response body (a dict repr)."""
+    from lr_mcp import client as lr
+    monkeypatch.setattr(lr, "catalog_path", lambda: "/v2/catalogs/c0ffee/")
+    monkeypatch.setattr(lr, "request", lambda method, path, **k: (
+        status, b'while (1) {}\n{"code":1000,"description":"Resource not found"}'))
+    with pytest.raises(compat.LrError) as exc:
+        compat.album_info("d" * 32)
+    assert expected in str(exc.value)
+    assert ("{'code'" in str(exc.value)) == (status != 404)

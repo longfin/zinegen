@@ -59,6 +59,9 @@ lib dir automatically. Ghostscript (`gs`) is required for proofs.
 - **PDF/X invariants** (checked by `check.py`): an output intent with an embedded profile, TrimBox and BleedBox
   on every page, CMYK/Gray images only for X-1a, ICC-tagged RGB for X-4, no transparency on X-1a, all fonts
   embedded. Any change to `render.py` or the template must keep `zinegen check` green on both standards.
+  `check.py` walks nested Form XObjects and content-stream colour operators, so do not rely on WeasyPrint
+  features that draw through SVG (its `@page { marks }` produced DeviceRGB in a transparency group): crop
+  marks are drawn by `render.add_marks` from `layout.crop_marks`.
 - **Never recompress a source JPEG twice.** X-1a decodes each photo once, applies EXIF orientation, downsamples
   it to `output.max_dpi`, converts P3 -> CMYK and encodes it once (cached in `cache/cmyk/`); X-4 embeds the
   original bytes. The one exception is an X-4 photo with an EXIF orientation tag: it is rotated and encoded once
