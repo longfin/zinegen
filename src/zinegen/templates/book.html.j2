@@ -7,7 +7,9 @@
 {% for ff in font_faces %}@font-face { font-family: "{{ ff.family }}"; font-weight: {{ ff.weight }}; src: url("{{ ff.file }}"); }
 {% endfor %}
 {% if icc %}@color-profile --press { src: url("{{ icc }}"); components: {{ icc_components }}; }{% endif %}
-@page { size: {{ W }}mm {{ H }}mm; margin: 0; bleed: {{ B }}mm; {% if marks %}marks: crop cross;{% endif %} }
+@page { size: {{ W }}mm {{ H }}mm; margin: 0; bleed: {{ B }}mm; }
+{# No `marks:` here: WeasyPrint draws them in DeviceRGB inside a transparency group and inside the bleed.
+   render.add_marks draws PDF/X-safe marks outside the bleed instead. #}
 html, body { margin: 0; padding: 0; }
 .page { position: relative; width: {{ W }}mm; height: {{ H }}mm; page-break-after: always; overflow: visible; }
 .page:last-child { page-break-after: auto; }
@@ -17,14 +19,18 @@ html, body { margin: 0; padding: 0; }
    re-encodes it at Pillow's default quality without its ICC profile. render.prepare_images applies EXIF
    orientation itself, so every file referenced here is already upright. #}
 .clip img { position: absolute; display: block; image-orientation: none; }
-.t { position: absolute; color: device-cmyk(0 0 0 1); white-space: pre-wrap; overflow: hidden; }
-.title { font-family: "{{ fonts.title }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ type.title_pt }}pt; line-height: 1.3; letter-spacing: 0.02em; }
-.subtitle { font-family: "{{ fonts.body }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ type.body_pt + 1 }}pt; line-height: 1.5; }
-.heading { font-family: "{{ fonts.title }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ type.body_pt + 4 }}pt; line-height: 1.4; }
-.body { font-family: "{{ fonts.body }}", "Noto Serif CJK KR", "Noto Serif KR", "Nanum Myeongjo", serif; font-size: {{ type.body_pt }}pt; line-height: 1.75; text-align: justify; word-break: keep-all; }
-.caption { font-family: "{{ fonts.caption }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ type.caption_pt }}pt; line-height: 1.5; color: device-cmyk(0 0 0 0.85); }
-.colophon { font-family: "{{ fonts.caption }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ type.caption_pt }}pt; line-height: 1.6; color: device-cmyk(0 0 0 0.85); }
-.folio { font-family: "{{ fonts.caption }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ type.caption_pt }}pt; color: device-cmyk(0 0 0 0.7); }
+{# Korean words are kept whole by U+2060 WORD JOINERs that the keep_all filter puts between the letters of a
+   word: WeasyPrint does not support `word-break: keep-all` (it drops the declaration). `overflow-wrap`
+   still breaks a word that is wider than its box. Font sizes and line heights come from layout.py, which cuts
+   every text box to a whole number of lines. #}
+.t { position: absolute; color: device-cmyk(0 0 0 1); white-space: pre-wrap; overflow: hidden; overflow-wrap: anywhere; }
+.title { font-family: "{{ fonts.title }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ pt.title }}pt; line-height: {{ lh.title }}; letter-spacing: 0.02em; }
+.subtitle { font-family: "{{ fonts.body }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ pt.subtitle }}pt; line-height: {{ lh.subtitle }}; }
+.heading { font-family: "{{ fonts.title }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ pt.heading }}pt; line-height: {{ lh.heading }}; }
+.body { font-family: "{{ fonts.body }}", "Noto Serif CJK KR", "Noto Serif KR", "Nanum Myeongjo", serif; font-size: {{ pt.body }}pt; line-height: {{ lh.body }}; text-align: justify; }
+.caption { font-family: "{{ fonts.caption }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ pt.caption }}pt; line-height: {{ lh.caption }}; color: device-cmyk(0 0 0 0.85); }
+.colophon { font-family: "{{ fonts.caption }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ pt.colophon }}pt; line-height: {{ lh.colophon }}; color: device-cmyk(0 0 0 0.85); }
+.folio { font-family: "{{ fonts.caption }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ pt.folio }}pt; line-height: {{ lh.folio }}; color: device-cmyk(0 0 0 0.7); }
 .center { text-align: center; } .right { text-align: right; } .left { text-align: left; }
 </style>
 </head>
@@ -37,7 +43,7 @@ html, body { margin: 0; padding: 0; }
   </div>
 {% endfor %}
 {% for t in pl.texts %}
-  <div class="t {{ t.kind }} {{ t.align }}" style="left:{{ t.x }}mm;top:{{ t.y }}mm;width:{{ t.w }}mm;height:{{ t.h }}mm">{{ t.text }}</div>
+  <div class="t {{ t.kind }} {{ t.align }}" data-page="{{ pl.index }}" data-kind="{{ t.kind }}" style="left:{{ t.x }}mm;top:{{ t.y }}mm;width:{{ t.w }}mm;height:{{ '%.3f' % t.h }}mm">{{ t.text | keep_all }}</div>
 {% endfor %}
 </div>
 {% endfor %}

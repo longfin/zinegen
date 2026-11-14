@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import threading
 import time
@@ -127,7 +128,14 @@ def photos_document(album: dict, photos: list[Photo]) -> dict:
 
 def album_info(album_id: str) -> dict:
     """Album name, parent and sort mode (`assetSortOrder`: captureDateAsc | captureDateDesc | customAsc)."""
-    a = lr.get_json(lr.catalog_path() + f"albums/{album_id}")
+    try:
+        a = lr.get_json(lr.catalog_path() + f"albums/{album_id}")
+    except lr.LrError as e:
+        # get_json's message ends with the raw response body (a dict repr); a 404 only means "no such album"
+        if re.search(r" returned 404\b", str(e)):
+            raise lr.LrError(f"album {album_id} not found in the Lightroom catalog: the id may be mistyped, from "
+                             "another account, or the album was deleted; list the albums to find its id") from None
+        raise
     p = a.get("payload", {})
     return {"id": a["id"], "name": p.get("name"), "sort": p.get("assetSortOrder") or "captureDateAsc",
             "parent": (p.get("parent") or {}).get("id")}

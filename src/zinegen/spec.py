@@ -107,6 +107,18 @@ class Book:
     def proof_dir(self) -> Path:
         return self.root / "proof"
 
+    @property
+    def missing_file(self) -> Path:
+        """Photo ids the last fetch could not find in Lightroom (cache/missing.json), so that render can say so
+        instead of asking for another fetch."""
+        return self.cache_dir / "missing.json"
+
+    def missing_ids(self) -> set[str]:
+        try:
+            return set(json.loads(self.missing_file.read_text()))
+        except (OSError, ValueError, TypeError):
+            return set()
+
     def photo_ids(self) -> list[str]:
         ids = []
         for p in self.pages:
@@ -115,6 +127,15 @@ class Book:
                 ids.append(v)
             ids += list(p.data.get("photos") or [])
         return list(dict.fromkeys(ids))
+
+
+def record_missing(book: Book, missing: list[str]):
+    """Remember (or forget) the ids a fetch did not find in Lightroom; see Book.missing_file."""
+    if missing:
+        book.cache_dir.mkdir(parents=True, exist_ok=True)
+        book.missing_file.write_text(json.dumps(sorted(missing)))
+    else:
+        book.missing_file.unlink(missing_ok=True)
 
 
 def _merge(base: dict, over: dict | None) -> dict:

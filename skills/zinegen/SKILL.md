@@ -54,15 +54,16 @@ order, an unknown album id or ICC profile). Read the message and fix the cause r
    tool error `book.yaml is not a valid book spec:` with one line per problem and its path (e.g.
    `binding: 'spiral' is not one of [...]`, `pages[3] (margin): ...`); per-page problems are listed once the
    top-level ones are fixed. A YAML syntax error returns `book.yaml is not valid YAML: ...`.
-5. **Fetch.** `zg_fetch` downloads the renditions into `cache/`. The first full-size download takes a few
-   seconds per photo (about 140 s for 20 photos in a test) and reports no progress until it returns, so tell
-   the user before a large fetch. Later runs skip unchanged photos, and an interrupted fetch keeps what it
+5. **Fetch.** `zg_fetch` downloads the renditions into `cache/`. The first full-size download of 20 photos
+   took 15–25 s in a test (it depends on the connection and the photos' size) and reports no progress until
+   it returns, so tell the user before a large fetch. Later runs skip unchanged photos, and an interrupted fetch keeps what it
    finished. `source.size` (`fullsize` default, or `"2560"`, `"2048"`, `"1280"`, `"640"` px on the long edge)
    sets the rendition size; it is a string, so quote the number in YAML (`size: "2560"`; a bare `2560` fails
    validation): keep `fullsize` for offset; a smaller size downloads faster and is enough for small
    placements (check the dpi in the report). Changing it downloads everything again. The result lists
    `downloaded`, `skipped`, `errors`, `outside_album` (found by id outside the album) and `missing` (not in
-   the catalog at all, with a `warning`): fix `missing` ids in `book.yaml` before rendering.
+   the catalog at all, with a `warning`): fix `missing` ids in `book.yaml` before rendering (render names
+   them as not in Lightroom; fetching again does not help).
 6. **Render and look.** `zg_render` → `zg_proof`. `zg_proof` returns at most 12 spreads per call; its first
    text block says how many spreads the book has and lists every spread not shown, with a `spreads=[...]` call
    for the next batch of up to 12. A call with explicit `spreads` does not repeat that list, so for a book over
@@ -78,7 +79,37 @@ order, an unknown album id or ICC profile). Read the message and fix the cause r
    user. Render itself fails (a tool error, no PDF written) for an invalid spec, a photo not fetched yet, or
    an `output.icc` that cannot be resolved.
 8. **Deliver** `out/interior.pdf` and tell the user what to confirm with the printer: paper caliper for the
-   spine (`zg_spine`), whether they accept PDF/X-1a or X-4, and the ICC profile used.
+   spine (`zg_spine`, which rounds the page count up to the binding's multiple and computes the width for the
+   rounded count), whether they accept PDF/X-1a or X-4, and the ICC profile used.
+
+## book.yaml keys besides the pages
+
+Use `zg_spec_help` for the full list. The ones a draft does not show:
+
+- `page_numbers: true` adds a folio (in the caption font, at the bottom outside corner) to every page except
+  `title`, `blank` (inserted and padding blanks included), `full-bleed`, and both pages of `spread-full` and
+  `spread-margin`. Default `false`.
+- `marks` (default `true`): crop marks and registration targets outside the bleed, in the registration
+  colour; the MediaBox grows to hold them, TrimBox/BleedBox do not change. Set `false` if the printer asks for
+  a PDF without marks (many POD services do).
+- `fonts: {body, caption, title}`: fontconfig family names (`fc-list : family`); defaults Nanum Myeongjo /
+  Nanum Gothic / Nanum Myeongjo. A family that is not installed silently falls back to another font, so
+  check the proof. `type: {body_pt, caption_pt, title_pt}` (defaults 10 / 7.5 / 24); folios and the colophon
+  use `caption_pt`, a `text` page heading is `body_pt + 4`, a subtitle `body_pt + 1`.
+- On `margin` pages: `valign` (`top` default, `center`, `bottom`) moves the photo inside the space above the
+  caption; `caption_align` (`left` default, `center`, `right`) aligns the caption.
+- Korean text breaks only between words (like CSS `word-break: keep-all`); a word wider than its box is
+  still broken.
+
+## Both standards from one book
+
+`out/` holds one render: rendering again with another `output.standard` replaces `interior.pdf`,
+`report.json` and `check.json`. To deliver both, copy `out/interior.pdf` (and `check.json`) aside after the
+first standard is green (e.g. to `delivery/interior-x1a.pdf` in the book directory), then change
+`output.standard`/`output.icc`, `zg_render`, `zg_check`, and copy that one too. Both renders share `cache/`,
+so nothing is fetched again (X-1a's CMYK copies live in `cache/cmyk/`). Alternatively keep a second book
+directory with its own `book.yaml` and copy `cache/*.jpg` into it; a relative `output.icc` is then resolved
+against that directory.
 
 ## Issue codes
 
@@ -95,11 +126,14 @@ Each issue has `code`, `level` (`info` | `warning` | `error`), `message` and, wh
 | `NO_OUTPUT_PROFILE` | error | x-4 with `output.icc` unset: no output intent, fine for proofs, not for print |
 | `DPI_ABOVE_NEED` | info | x-4 photos far above print resolution; may suggest a smaller `source.size` |
 | `ORIENTATION_REENCODED` | warning | x-4 photo with an EXIF rotation, re-encoded once to embed it upright |
+| `TEXT_CLIPPED` | warning | a caption (two lines) or other text box has more lines than fit; the rest is not printed |
+| `DISPLAY_OUTPUT_PROFILE` | warning | `output.icc` is a display profile (e.g. the bundled sRGB), not the printer's |
 | `NO_OUTPUT_INTENT`, `NO_DEST_PROFILE`, `NO_PDFX_VERSION`, `PDF_VERSION` | error | PDF check |
 | `NO_TRIMBOX`, `TRIMBOX_SIZE`, `BLEED_SMALL` | error | PDF check |
 | `NO_BLEEDBOX` | warning | PDF check |
 | `IMAGE_COLORSPACE`, `IMAGE_SMASK`, `FONT_NOT_EMBEDDED` | error | PDF check |
-| `TRANSPARENCY` | error on x-1a, warning on x-4 | PDF check |
+| `TRANSPARENCY` | error on x-1a, warning on x-4 | PDF check (page and nested Form XObjects) |
+| `VECTOR_COLORSPACE` | error | PDF check: RGB vector colour on x-1a (or on x-4 with a CMYK output intent) |
 
 ## Layout rules the renderer enforces
 
@@ -132,7 +166,7 @@ Each issue has `code`, `level` (`info` | `warning` | `error`), `message` and, wh
 - Captions in 7-8 pt. On `margin` pages they sit at the bottom-left of the margin box; on `pair` pages directly
   under the two photos, across the full margin-box width; on `spread-margin` at the bottom right of the
   right-hand page. `full-bleed` and `spread-full` take no caption.
-- A caption box holds two lines and clips the rest: keep `pair` and `margin` captions to two lines at the
-  margin-box width (on A5 at 7.5 pt, about 170 Latin or 110 Korean characters) and check them
-  on a higher-dpi proof.
+- A caption box holds two lines and drops the rest (whole lines, reported as `TEXT_CLIPPED`): keep `pair`
+  and `margin` captions to two lines at the margin-box width (on A5 at 7.5 pt, about 170 Latin or 110 Korean
+  characters) and check them on a higher-dpi proof.
 - Keep margins asymmetric (inside > outside, bottom > top). Default A5: top 14 / bottom 16 / inside 16 / outside 12.
