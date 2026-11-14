@@ -587,6 +587,16 @@ def test_count_given_up_before_the_deadline_is_late(albums):
     albums["results"][C2] = compat.LrError("GET https://lr.adobe.io/v2/x failed after 1 attempt: TimeoutError()")
     counts, note = cli.album_counts([{"id": C2, "updated": "u2"}], seconds=5, hint="call again")
     assert counts == {} and note == "1 of 1 albums not counted, time limit of 5 s reached: call again"
+    albums["results"][C2] = compat.LrError("GET /v2/x returned 503: busy")
+    assert cli.album_counts([{"id": C2, "updated": "u2"}], seconds=5)[1].startswith("1 of 1 albums not counted")
+
+
+@pytest.mark.parametrize("message", ["GET /v2/x returned 403: denied", "GET /v2/x returned 500: boom"])
+def test_count_error_never_retried_is_a_failure_near_the_deadline(albums, message):
+    """A 403 or 500 is not retried by lr-mcp, so inside the margin it is still a real error."""
+    albums["results"][C2] = compat.LrError(message)
+    counts, note = cli.album_counts([{"id": C2, "updated": "u2"}], seconds=5)
+    assert counts == {} and note == f"1 could not be counted: {message}"
 
 
 def test_count_hint_with_a_query(albums, capsys):

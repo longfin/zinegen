@@ -60,6 +60,8 @@ COUNT_WORKERS = 6
 # lr-mcp gives up early, raising, when its next retry would start after the deadline; that wait is at most
 # 13.5 s (backoff) or 10 s (Retry-After). An error this close to the deadline is a count that ran out of time.
 COUNT_RETRY_MARGIN = 15
+# lr_mcp.client messages of the failures it retries: transport errors and 429/502/503/504 responses
+_RETRYABLE = re.compile(r" failed after \d+ attempts?: | returned (?:429|502|503|504)\b")
 
 
 def list_albums(query: str | None = None) -> list[dict]:
@@ -99,8 +101,12 @@ def album_counts(albums: list[dict], seconds: float = COUNT_SECONDS,
         try:
             return lr.album_asset_count(alb["id"], alb.get("updated"), deadline)
         except Exception as e:  # noqa: BLE001 - one bad album or response must not lose the listing
-            # cut short by the deadline, or abandoned because the next retry would pass it: late, not broken
-            return None if time.monotonic() + COUNT_RETRY_MARGIN > deadline else e
+            # cut short by the deadline, or a retryable failure lr-mcp abandoned because the next retry would
+            # pass it: late, not broken. A 403 or 500 is never retried, so it stays an error even then.
+            now = time.monotonic()
+            if now > deadline or (now + COUNT_RETRY_MARGIN > deadline and _RETRYABLE.search(str(e))):
+                return None
+            return e
 
     with ThreadPoolExecutor(COUNT_WORKERS) as ex:
         results = list(ex.map(count, albums))

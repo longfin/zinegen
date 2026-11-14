@@ -254,7 +254,9 @@ _NOT_READY = re.compile(r"^Rendition \S+ for \S+ failed \(404\)|^Generating the 
 def _retry_rendition(size: str, e: LrError) -> bool:
     """True for the failures lr-mcp does not retry itself and a second call can fix: a generated size
     (2560/fullsize) still not ready after lr-mcp's polling, or its generate request refused as busy.
-    A 404 on a stored size means the photo is gone, and anything else lr-mcp has already retried."""
+    Nothing else is retried here: dropped connections and 429/502/503/504 on a GET were already retried
+    by lr-mcp, and a 404 on a stored size (the photo is gone), a 403 or a 500 is retried by nobody, on
+    purpose, since another attempt would fail the same way."""
     return size in ("2560", "fullsize") and bool(_NOT_READY.match(str(e)))
 
 

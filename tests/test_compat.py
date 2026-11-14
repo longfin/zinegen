@@ -167,6 +167,34 @@ def test_fetch_renditions_concurrent_writers_of_one_photo(tmp_path, monkeypatch)
     assert not list(tmp_path.glob(".*.part"))
 
 
+@pytest.mark.parametrize("get_status, post_status, retry", [
+    (404, 202, True),    # generation requested, still 404 on every poll
+    (404, 503, True),    # the generate POST (never retried by lr-mcp) refused as busy
+    (404, 403, False),   # generate refused for good
+    (403, None, False),  # the GET itself is forbidden
+])
+def test_retry_rendition_matches_lr_mcp_messages(monkeypatch, get_status, post_status, retry):
+    """Contract with the real lr_mcp.client.rendition: a change in its wording must fail here."""
+    from lr_mcp import client as lr
+    calls = []
+
+    def request(method, path, **k):
+        calls.append(method)
+        if method == "POST":
+            return post_status, b'while (1) {}\n{"code":1000,"description":"busy"}'
+        return get_status, b'while (1) {}\n{"code":1000,"description":"Resource not found"}'
+
+    monkeypatch.setattr(lr, "catalog_path", lambda: "/v2/catalogs/c0ffee/")
+    monkeypatch.setattr(lr, "request", request)
+    monkeypatch.setattr(lr.time, "sleep", lambda s: None)
+    with pytest.raises(compat.LrError) as exc:
+        lr.rendition("a" * 32, "fullsize")
+    assert compat._retry_rendition("fullsize", exc.value) is retry
+    assert not compat._retry_rendition("640", exc.value)    # only generated sizes are retried
+    if get_status == 404 and post_status == 202:
+        assert calls.count("POST") == 1 and calls.count("GET") > 1   # it really polled
+
+
 def test_lr_mcp_state_is_isolated():
     """conftest points lr-mcp at a temporary home, so the real sign-in is never loaded."""
     import os
