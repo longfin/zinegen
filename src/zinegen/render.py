@@ -387,10 +387,32 @@ def postprocess(pdf_path: Path, book: Book, marks: bool = False, icc: Path | Non
                 if name.lstrip("/").encode() not in used:
                     if strict or str(name).startswith("/lab-"):
                         del cs[name]
+        set_bleed(pdf, book.bleed)
         if marks:
             cmyk = icc is not None and color.profile_components(icc) == ["c", "m", "y", "k"]
             add_marks(pdf, _layout.crop_marks(book), book.trim_h, cmyk)
         pdf.save(pdf_path)
+
+
+def set_bleed(pdf, bleed_mm: float):
+    """Set every BleedBox to the TrimBox grown by the real bleed, and grow the MediaBox to hold it.
+
+    WeasyPrint lays the page out (and sizes the MediaBox) for the full CSS `bleed`, but writes the BleedBox as
+    trim ± min(bleed, 10 pt), so any bleed above 3.53 mm was declared too small (BLEED_SMALL) although the
+    full-bleed photos reach it."""
+    import pikepdf
+
+    b = bleed_mm * 72 / 25.4
+    for page in pdf.pages:
+        tb = [float(v) for v in page.obj["/TrimBox"]]
+        bb = [round(v, 3) for v in (tb[0] - b, tb[1] - b, tb[2] + b, tb[3] + b)]
+        page.obj["/BleedBox"] = pikepdf.Array(bb)
+        mb = [float(v) for v in page.obj["/MediaBox"]]
+        # WeasyPrint's MediaBox is already trim ± bleed (unrounded): snap it to the BleedBox so that rounding
+        # cannot leave the BleedBox a hair outside it; a MediaBox that is really larger (marks) is kept.
+        grown = [min(m, v) if i < 2 else max(m, v) for i, (m, v) in enumerate(zip(mb, bb, strict=True))]
+        page.obj["/MediaBox"] = pikepdf.Array([v if abs(g - v) < 0.01 else g
+                                               for g, v in zip(grown, bb, strict=True)])
 
 
 MARK_LINE_PT = 0.25

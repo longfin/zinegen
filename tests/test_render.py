@@ -342,6 +342,37 @@ def test_marks_off(book_dir: Path):
             assert _forms(page) == []
 
 
+@pytest.mark.parametrize("marks", [True, False])
+@pytest.mark.parametrize("kind", ["x-4", "x-1a"])
+@pytest.mark.parametrize("bleed", [5, 10])
+def test_bleed_above_10pt(book_dir: Path, request, kind: str, marks: bool, bleed: float):
+    """WeasyPrint writes the BleedBox as trim ± min(bleed, 10 pt) although it lays the page out for the full
+    bleed; postprocess sets the real one. The full-bleed photo's clip reaches it and the marks stay outside."""
+    import pikepdf
+    _output(book_dir, request, kind)
+    doc = yaml.safe_load((book_dir / "book.yaml").read_text())
+    doc.update(bleed_mm=bleed, marks=marks)
+    (book_dir / "book.yaml").write_text(yaml.safe_dump(doc))
+    book = spec.load(book_dir / "book.yaml")
+    render.render(book)
+    res = check.check(book)
+    assert res["ok"], res["issues"]
+    assert "BLEED_SMALL" not in {i["code"] for i in res["issues"]}
+    b_pt = bleed * 72 / 25.4
+    with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
+        for page in p.pages:
+            b = _boxes(page)
+            tb, bb, mb = b["/TrimBox"], b["/BleedBox"], b["/MediaBox"]
+            assert bb == pytest.approx([tb[0] - b_pt, tb[1] - b_pt, tb[2] + b_pt, tb[3] + b_pt], abs=0.01)
+            assert mb[0] <= bb[0] and mb[1] <= bb[1] and mb[2] >= bb[2] and mb[3] >= bb[3]
+            if not marks:
+                assert mb == bb
+        # page 2 is full-bleed: its photo is clipped to the bleed rectangle (WeasyPrint px, 0.75 pt each)
+        clip = next(ops for ops, op in pikepdf.parse_content_stream(p.pages[1]) if str(op) == "re")
+        x, y, w, h = (float(v) * 0.75 for v in clip)
+        assert (x, w) == (pytest.approx(-b_pt, abs=0.01), pytest.approx(tb[2] - tb[0] + 2 * b_pt, abs=0.01))
+
+
 @pytest.mark.parametrize("kind", ["x-1a", "x-4-cmyk", "x-4"])
 def test_check_catches_weasyprint_marks(book_dir: Path, request, kind: str):
     """The PDF zinegen 0.1.0 wrote with `marks: true`: WeasyPrint's `marks: crop cross` (DeviceRGB strokes in a

@@ -55,8 +55,12 @@ def check(book: Book) -> dict:
             bb = page.obj.get("/BleedBox")
             if bb is None:
                 issues.append(Issue("NO_BLEEDBOX", "no BleedBox", page=n))
-            elif tb is not None and (float(tb[0]) - float(bb[0])) < book.bleed * PT - 0.6:
-                issues.append(Issue("BLEED_SMALL", f"bleed smaller than {book.bleed} mm", page=n))
+            elif tb is not None:
+                t, b = [float(v) for v in tb], [float(v) for v in bb]
+                least = min(t[0] - b[0], t[1] - b[1], b[2] - t[2], b[3] - t[3])
+                if least < book.bleed * PT - 0.6:
+                    issues.append(Issue("BLEED_SMALL", f"BleedBox is {least / PT:.2f} mm beyond the trim on its "
+                                        f"narrowest side, smaller than the {book.bleed} mm bleed", page=n))
             issues += _check_content(page, n, std, intent_cmyk, seen)
     rep_file = book.out_dir / "report.json"
     if rep_file.exists():
