@@ -36,7 +36,9 @@ order, an unknown album id or ICC profile). Read the message and fix the cause r
 2. **Print target.** Ask (or infer from the request) trim size, binding and print target. Offset/국내 인쇄소 →
    `pdf/x-1a` with a CMYK profile (`JapanColor2001Coated` is the Korean/Japanese default; `CoatedFOGRA39` for
    Europe; `USWebCoatedSWOP` for US). POD / Blurb-like services → `pdf/x-4` (photos embedded as the source
-   JPEGs, tagged Display P3; the output intent still needs the printer's profile).
+   JPEGs, tagged Display P3; the output intent still needs the printer's profile). An RGB output intent (the
+   bundled sRGB) is for proofs only: black text is then RGB black, which a printer converts to four-colour black.
+   For press, set a CMYK `output.icc` (text stays pure K).
 3. **Draft.** `zg_init_book` with `album_id`, an absolute `dir`, `standard` (`pdf/x-1a` default, or `pdf/x-4`)
    and `icc` (profile name or path, see "Colour and file size"; default: the first of `JapanColor2001Coated`,
    `CoatedFOGRA39` found on the machine). It writes `book.yaml` (sequence = album order, templates
@@ -122,7 +124,7 @@ Each issue has `code`, `level` (`info` | `warning` | `error`), `message` and, wh
 | `PAGES_PADDED` | info | blanks added to reach the binding's page multiple |
 | `LOW_DPI` / `BAD_DPI` | warning / error | effective resolution below 300 / 200 dpi |
 | `GUTTER_CROSSING` | warning | a spread photo crosses the gutter on `perfect`/`hardcover` |
-| `NO_ROOM` | error | margins, `gap_mm` or the caption leave a photo box under 5 mm; the page's photos are not placed |
+| `NO_ROOM` | error | margins, `gap_mm` or the caption leave a photo box under 5 mm (the page's photos are not placed), or a text page's body has less than one line of height (the body is not printed) |
 | `NO_OUTPUT_PROFILE` | error | x-4 with `output.icc` unset: no output intent, fine for proofs, not for print |
 | `DPI_ABOVE_NEED` | info | x-4 photos far above print resolution; may suggest a smaller `source.size` |
 | `ORIENTATION_REENCODED` | warning | x-4 photo with an EXIF rotation, re-encoded once to embed it upright |
@@ -133,7 +135,7 @@ Each issue has `code`, `level` (`info` | `warning` | `error`), `message` and, wh
 | `NO_BLEEDBOX` | warning | PDF check |
 | `IMAGE_COLORSPACE`, `IMAGE_SMASK`, `FONT_NOT_EMBEDDED` | error | PDF check |
 | `TRANSPARENCY` | error on x-1a, warning on x-4 | PDF check (page and nested Form XObjects) |
-| `VECTOR_COLORSPACE` | error | PDF check: RGB vector colour on x-1a (or on x-4 with a CMYK output intent) |
+| `VECTOR_COLORSPACE` | error | PDF check: RGB vector colour on x-1a; on x-4 a device colour space that does not match the output intent (DeviceRGB without an RGB intent, DeviceCMYK without a CMYK one) |
 
 ## Layout rules the renderer enforces
 

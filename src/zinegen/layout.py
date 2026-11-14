@@ -32,10 +32,29 @@ def line_mm(book: Book, kind: str) -> float:
     return font_pt(book, kind) * PT_MM * LINE_HEIGHT[kind]
 
 
-def _whole_lines(book: Book, t: TextEl) -> TextEl:
-    """Cut a text box to a whole number of lines (at least one)."""
+# Text kinds whose box is the space left between other content (a text page's body under its heading, inside
+# the margins). Every other box has a fixed height of its own (title, subtitle, heading, colophon, folio,
+# caption) and always keeps at least one line, even when its type is larger than the box.
+BOUNDED_KINDS = ("body",)
+
+
+def _whole_lines(book: Book, t: TextEl, pl: PageLayout) -> TextEl:
+    """Cut a text box to the whole number of lines that fit in its height.
+
+    A fixed-height box keeps at least one line, so large type is never dropped (it may run past its nominal
+    height, as it always did). A bounded box (BOUNDED_KINDS) whose space is less than one line high gets 0 lines,
+    so it cannot be drawn over the margin, and the page gets a NO_ROOM error: the text is not printed and the
+    book is not clean. This does not depend on render's TEXT_CLIPPED detection."""
     lh = line_mm(book, t.kind)
-    t.h = max(1, int(t.h / lh + 1e-6)) * lh
+    n = max(0, int(t.h / lh + 1e-6))
+    if n == 0 and t.kind in BOUNDED_KINDS:
+        if t.text.strip():
+            pl.issues.append(Issue("NO_ROOM", f"{t.kind} text has {t.h:.1f} mm of height, less than one line "
+                                   f"({lh:.1f} mm); it is not printed. Reduce the margins, the type size or "
+                                   "the heading", page=pl.index))
+    else:
+        n = max(1, n)
+    t.h = n * lh
     return t
 
 
@@ -212,7 +231,7 @@ def layout(book: Book, sizes: dict[str, tuple[int, int]]) -> list[PageLayout]:
             out += [left_pl, right_pl]
     for pl in out:
         for t in pl.texts:
-            _whole_lines(book, t)
+            _whole_lines(book, t, pl)
     return out
 
 

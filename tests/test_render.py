@@ -297,7 +297,9 @@ def test_marks_are_pdfx_safe(book_dir: Path, request, kind: str):
     render.render(book)
     res = check.check(book)
     assert res["ok"], res["issues"]
-    assert not {i["code"] for i in res["issues"]} & {"TRANSPARENCY", "VECTOR_COLORSPACE"}
+    # no false positive from the deeper walk (inline images, annotations, Type 3, device colour vs intent)
+    assert not {i["code"] for i in res["issues"]} & {"TRANSPARENCY", "VECTOR_COLORSPACE", "IMAGE_COLORSPACE",
+                                                       "FONT_NOT_EMBEDDED", "BLEED_SMALL"}
     with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
         for page in p.pages:
             b = _boxes(page)
@@ -327,6 +329,85 @@ def test_marks_are_pdfx_safe(book_dir: Path, request, kind: str):
     assert std == book.output["standard"]
 
 
+@pytest.mark.parametrize("kind", ["x-4", "x-1a", "x-4-cmyk"])
+def test_text_colour_matches_output_intent(book_dir: Path, request, kind: str):
+    """Text is pure K (DeviceCMYK) on a CMYK intent; on an RGB intent, where PDF/X-4 does not allow DeviceCMYK,
+    it is the same lightness in the intent profile (ICCBased), never DeviceCMYK or DeviceRGB."""
+    import pikepdf
+    _output(book_dir, request, kind)
+    _set_page(book_dir, 5, text="colophon text")
+    book = spec.load(book_dir / "book.yaml")
+    render.render(book)
+    assert check.check(book)["ok"]
+    selected = set()
+    with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
+        for page in p.pages:
+            for operands, op in pikepdf.parse_content_stream(page):
+                assert str(op) not in ("k", "K", "rg", "RG")
+                if str(op) in ("cs", "CS"):
+                    selected.add(str(operands[0]))
+                    if kind == "x-4":
+                        icc = page.Resources.ColorSpace[str(operands[0])]
+                        assert str(icc[0]) == "/ICCBased" and int(icc[1].N) == 3
+    assert selected == ({"/--press"} if kind == "x-4" else {"/DeviceCMYK"})
+
+
+SRGB = files("zinegen") / "templates" / "sRGB2014.icc"
+# L* of the text tints as proofs showed them while text was DeviceCMYK K (Ghostscript, sRGB output)
+TINT_LSTAR = {0.85: 32.9, 0.7: 46.3}
+
+
+def _ink_value(css: str) -> float:
+    vals = {float(v) for v in css.removeprefix("color(--press ").removesuffix(")").split()}
+    assert len(vals) == 1                     # a neutral
+    return vals.pop()
+
+
+def test_ink_rgb_intent_matches_k_tint_lightness():
+    from zinegen import color
+    icc = Path(str(SRGB))
+    assert render.ink(1, None) == "device-cmyk(0 0 0 1)"
+    assert render.ink(1, icc) == "color(--press 0.0000 0.0000 0.0000)"        # solid black is true black
+    for tint, lstar in TINT_LSTAR.items():
+        assert color.neutral_lightness(icc, _ink_value(render.ink(tint, icc))) == pytest.approx(lstar, abs=1)
+    # the hierarchy holds: body darker than caption darker than folio
+    assert _ink_value(render.ink(1, icc)) < _ink_value(render.ink(0.85, icc)) < _ink_value(render.ink(0.7, icc))
+
+
+def test_ink_cmyk_intent_is_pure_k(cmyk_icc: Path):
+    assert render.ink(0.85, cmyk_icc) == "device-cmyk(0 0 0 0.85)"
+
+
+@pytest.mark.skipif(not shutil.which("gs"), reason="ghostscript not installed")
+def test_ink_rasterises_at_k_tint_lightness(tmp_path: Path):
+    """Independent of LittleCMS: Ghostscript renders the ICCBased ink neutrals at the target L*."""
+    import subprocess
+
+    import pikepdf
+    from PIL import ImageCms
+    icc = Path(str(SRGB))
+    tints = [1, *TINT_LSTAR]
+    pdf = pikepdf.new()
+    pdf.add_blank_page(page_size=(100 * len(tints), 100))
+    prof = pdf.make_stream(icc.read_bytes())
+    prof["/N"] = 3
+    page = pdf.pages[0]
+    page.obj.Resources = pikepdf.Dictionary(ColorSpace=pikepdf.Dictionary(P=pikepdf.Array([pikepdf.Name.ICCBased, prof])))
+    body = "".join(f"/P cs {v} {v} {v} scn {i * 100} 0 100 100 re f "
+                   for i, v in enumerate(_ink_value(render.ink(t, icc)) for t in tints))
+    page.obj.Contents = pdf.make_stream(body.encode())
+    pdf.save(tmp_path / "ink.pdf")
+    subprocess.run(["gs", "-q", "-dNOPAUSE", "-dBATCH", "-dSAFER", "-sDEVICE=png16m", "-r36",
+                    f"-sOutputFile={tmp_path / 'ink.png'}", str(tmp_path / "ink.pdf")], check=True)
+    im = Image.open(tmp_path / "ink.png").convert("RGB")
+    lab = ImageCms.applyTransform(im, ImageCms.buildTransform(ImageCms.createProfile("sRGB"),
+                                                              ImageCms.createProfile("LAB"), "RGB", "LAB"))
+    got = [lab.getpixel((i * 50 + 25, 25))[0] * 100 / 255 for i in range(len(tints))]
+    assert got[0] < 1                                                     # solid: true black
+    for g, lstar in zip(got[1:], TINT_LSTAR.values(), strict=True):
+        assert g == pytest.approx(lstar, abs=1.5)
+
+
 def test_marks_off(book_dir: Path):
     import pikepdf
     doc = yaml.safe_load((book_dir / "book.yaml").read_text())
@@ -340,6 +421,37 @@ def test_marks_off(book_dir: Path):
             b = _boxes(page)
             assert b["/MediaBox"] == b["/BleedBox"]
             assert _forms(page) == []
+
+
+@pytest.mark.parametrize("marks", [True, False])
+@pytest.mark.parametrize("kind", ["x-4", "x-1a"])
+@pytest.mark.parametrize("bleed", [5, 10])
+def test_bleed_above_10pt(book_dir: Path, request, kind: str, marks: bool, bleed: float):
+    """WeasyPrint writes the BleedBox as trim ± min(bleed, 10 pt) although it lays the page out for the full
+    bleed; postprocess sets the real one. The full-bleed photo's clip reaches it and the marks stay outside."""
+    import pikepdf
+    _output(book_dir, request, kind)
+    doc = yaml.safe_load((book_dir / "book.yaml").read_text())
+    doc.update(bleed_mm=bleed, marks=marks)
+    (book_dir / "book.yaml").write_text(yaml.safe_dump(doc))
+    book = spec.load(book_dir / "book.yaml")
+    render.render(book)
+    res = check.check(book)
+    assert res["ok"], res["issues"]
+    assert "BLEED_SMALL" not in {i["code"] for i in res["issues"]}
+    b_pt = bleed * 72 / 25.4
+    with pikepdf.open(book_dir / "out" / "interior.pdf") as p:
+        for page in p.pages:
+            b = _boxes(page)
+            tb, bb, mb = b["/TrimBox"], b["/BleedBox"], b["/MediaBox"]
+            assert bb == pytest.approx([tb[0] - b_pt, tb[1] - b_pt, tb[2] + b_pt, tb[3] + b_pt], abs=0.01)
+            assert mb[0] <= bb[0] and mb[1] <= bb[1] and mb[2] >= bb[2] and mb[3] >= bb[3]
+            if not marks:
+                assert mb == bb
+        # page 2 is full-bleed: its photo is clipped to the bleed rectangle (WeasyPrint px, 0.75 pt each)
+        clip = next(ops for ops, op in pikepdf.parse_content_stream(p.pages[1]) if str(op) == "re")
+        x, y, w, h = (float(v) * 0.75 for v in clip)
+        assert (x, w) == (pytest.approx(-b_pt, abs=0.01), pytest.approx(tb[2] - tb[0] + 2 * b_pt, abs=0.01))
 
 
 @pytest.mark.parametrize("kind", ["x-1a", "x-4-cmyk", "x-4"])
@@ -394,6 +506,59 @@ def test_long_caption_is_reported_and_clipped_between_lines(book_dir: Path):
     h = float(re.search(r'data-page="3" data-kind="caption" style="[^"]*height:([\d.]+)mm', html).group(1))
     assert h == pytest.approx(2 * layout.line_mm(book, "caption"), abs=0.001)
     assert check.check(book)["ok"]                      # a warning, not an error
+
+
+def test_text_space_under_one_line_is_not_overdrawn(book_dir: Path, monkeypatch):
+    """A text page whose body gets less than one line of room: the box is cut to 0 lines (not grown past its
+    space into the bottom margin), and layout reports NO_ROOM (an error) on its own, so the book is not clean
+    even when WeasyPrint's boxes cannot be read for TEXT_CLIPPED."""
+    import re
+    monkeypatch.setattr(render, "text_overflow", lambda document: [])     # detection skipped
+    doc = yaml.safe_load((book_dir / "book.yaml").read_text())
+    doc["margins_mm"] = {"top": 96, "bottom": 97, "inside": 16, "outside": 12}     # 17 mm of height on A5
+    doc["pages"][5] = {"template": "text", "heading": "Notes", "text": "Body text that has no room."}
+    (book_dir / "book.yaml").write_text(yaml.safe_dump(doc))
+    book = spec.load(book_dir / "book.yaml")
+    rep = render.render(book)
+    html = (book_dir / "out" / "interior.html").read_text()
+    h = float(re.search(r'data-page="7" data-kind="body" style="[^"]*height:([\d.]+)mm', html).group(1))
+    assert h == 0
+    no_room = [i for i in rep["issues"] if i["code"] == "NO_ROOM" and "body text" in i["message"]]
+    assert [(i["page"], i["level"]) for i in no_room] == [(7, "error")]
+    assert not check.check(book)["ok"]
+
+
+@pytest.mark.skipif(not shutil.which("gs"), reason="ghostscript not installed")
+@pytest.mark.parametrize("kind", ["x-4", "x-1a"])
+def test_large_type_in_fixed_boxes_still_prints(book_dir: Path, request, kind: str):
+    """A title line taller than the 30 mm title box, and a folio taller than its 6 mm box, keep one line: text
+    that fits no fixed box is printed (past its nominal height), never dropped."""
+    import re
+    import subprocess
+
+    from zinegen import layout
+    _output(book_dir, request, kind)
+    doc = yaml.safe_load((book_dir / "book.yaml").read_text())
+    doc["type"] = {"title_pt": 72, "caption_pt": 16, "body_pt": 10}
+    doc["page_numbers"] = True
+    doc["pages"][0] = {"template": "title", "title": "Big"}
+    (book_dir / "book.yaml").write_text(yaml.safe_dump(doc))
+    book = spec.load(book_dir / "book.yaml")
+    assert layout.line_mm(book, "title") > 30 and layout.line_mm(book, "folio") > 6
+    rep = render.render(book)
+    assert not any(i["code"] in ("NO_ROOM", "TEXT_CLIPPED") for i in rep["issues"]), rep["issues"]
+    html = (book_dir / "out" / "interior.html").read_text()
+    for kind_, page in (("title", 1), ("folio", 3)):
+        h = float(re.search(rf'data-page="{page}" data-kind="{kind_}" style="[^"]*height:([\d.]+)mm', html).group(1))
+        assert h == pytest.approx(layout.line_mm(book, kind_), abs=0.001)
+    png = book_dir / "title.png"
+    subprocess.run(["gs", "-q", "-dNOPAUSE", "-dBATCH", "-dSAFER", "-sDEVICE=pnggray", "-r20", "-dUseTrimBox",
+                    "-dFirstPage=1", "-dLastPage=1", f"-sOutputFile={png}", str(book_dir / "out" / "interior.pdf")],
+                   check=True)
+    im = Image.open(png)
+    w, h = im.size
+    band = im.crop((0, int(h * 0.38), w, int(h * (0.38 + layout.line_mm(book, "title") / book.trim_h))))
+    assert sum(1 for v in band.getdata() if v < 128) > 20           # the title is inked
 
 
 def test_keep_all_joins_korean_words():
@@ -466,3 +631,34 @@ def test_unreadable_icc_is_a_clear_error(book_dir: Path, capsys):
     err = capsys.readouterr().err
     assert "error: output.icc 'bad.icc' resolves to" in err and "not a readable ICC profile" in err
     assert "Traceback" not in err
+
+
+def test_bleed_small_on_any_side(book_dir: Path):
+    """BLEED_SMALL looks at all four sides: one short side (top of page 2) is enough."""
+    import pikepdf
+    book = spec.load(book_dir / "book.yaml")
+    render.render(book)
+    pdf = book_dir / "out" / "interior.pdf"
+    with pikepdf.open(pdf, allow_overwriting_input=True) as p:
+        bb = [float(v) for v in p.pages[1].obj.BleedBox]
+        tb = [float(v) for v in p.pages[1].obj.TrimBox]
+        p.pages[1].obj.BleedBox = [bb[0], bb[1], bb[2], tb[3] + 1]            # 0.35 mm at the top only
+        p.save(pdf)
+    small = [i for i in check.check(book)["issues"] if i["code"] == "BLEED_SMALL"]
+    assert [(i["page"], i["level"]) for i in small] == [(2, "error")]
+    assert "0.35 mm" in small[0]["message"]
+
+
+def test_marks_refuse_mixed_trim_sizes_and_remove_pdf(book_dir: Path, monkeypatch):
+    real = render.add_marks
+
+    def skewed(pdf, *a, **k):
+        tb = [float(v) for v in pdf.pages[2].obj.TrimBox]
+        pdf.pages[2].obj.TrimBox = [tb[0], tb[1], tb[2] - 10, tb[3]]
+        return real(pdf, *a, **k)
+
+    monkeypatch.setattr(render, "add_marks", skewed)
+    book = spec.load(book_dir / "book.yaml")
+    with pytest.raises(render.RenderError, match="single trim size"):
+        render.render(book)
+    assert not (book_dir / "out" / "interior.pdf").exists()

@@ -313,7 +313,24 @@ def test_fetch_reports_missing(lightroom, tmp_path, monkeypatch):
     (tmp_path / "cache" / f"{A}.jpg").write_bytes(b"")     # A was fetched
     res = call("zg_render", {"book": str(tmp_path)})
     assert res.is_error and B in text(res) and "not in the album or the Lightroom catalog" in text(res)
-    assert "zg_fetch" not in text(res)
+    assert "Replace them" in text(res) and "run `zg_fetch` again to re-check" in text(res)
+
+    # photos.json older than the fetch (the usual case: init, then a fetch that found B deleted) lists B: that
+    # says nothing about B now, so the advice stays "replace the id"
+    import os
+    photos_json = tmp_path / "photos.json"
+    photos_json.write_text(json.dumps({"version": 1, "album": {"id": ALBUM}, "photos": [{"id": A}, {"id": B}]}))
+    missing_t = (tmp_path / "cache" / "missing.json").stat().st_mtime
+    os.utime(photos_json, (missing_t - 60, missing_t - 60))
+    res = call("zg_render", {"book": str(tmp_path)})
+    assert res.is_error and "Replace them" in text(res) and "not downloaded yet" not in text(res)
+
+    # photos.json written after the fetch (album drafted again) lists B: B was added to the album since, the
+    # missing list is stale, so render asks for a fetch instead of a book.yaml change
+    os.utime(photos_json, (missing_t + 60, missing_t + 60))
+    res = call("zg_render", {"book": str(tmp_path)})
+    assert res.is_error and B in text(res) and "not downloaded yet" in text(res) and "zg_fetch" in text(res)
+    assert "Replace them" not in text(res)
 
     # a later fetch that finds everything forgets the missing list
     monkeypatch.setattr(lightroom, "get_json", lambda path: {"resources": [{"id": B, "subtype": "image", "payload": {}}]})

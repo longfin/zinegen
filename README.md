@@ -30,7 +30,9 @@ book.yaml (edited by the agent / you) ─────────┴──render
   holds exactly one JPEG generation; text and rules are DeviceCMYK.
 - **PDF/X-4** (POD, Blurb-style services): the original P3 JPEGs are embedded byte for byte and tagged with their
   ICC profile (a photo with an EXIF rotation is the one exception: it is rotated and encoded once); the output
-  intent is still the press profile from `output.icc`.
+  intent is still the press profile from `output.icc`. With a CMYK press profile text is pure K (DeviceCMYK);
+  an RGB output intent (the bundled sRGB) is for proofs only: text is then RGB black and greys in that profile,
+  which a printer converts to four-colour black, so set a CMYK `output.icc` for press.
 - Proof PNGs are composed as spreads so an agent can look at them (`zg_proof` returns images over MCP).
 - A structural self-check (output intent, trim/bleed boxes, colour spaces, transparency, font embedding,
   resolution) runs with pikepdf. It is not a replacement for Acrobat/callas preflight.

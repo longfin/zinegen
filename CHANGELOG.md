@@ -48,6 +48,30 @@ output.
 - `check` looks into nested Form XObjects and tiling patterns (transparency groups, ExtGState alpha, soft
   masks and blend modes, images, fonts) and at the colour operators of every content stream, so RGB vector
   colour on PDF/X-1a is reported (`VECTOR_COLORSPACE`) instead of passing.
+- `check` also inspects inline images (`BI … EI`, abbreviated `/CS /RGB`, `/G`, `/CMYK`, `/I` and named
+  colour spaces), annotation appearance streams and Type 3 glyph procedures; a Type 3 font is no longer
+  reported as `FONT_NOT_EMBEDDED`. On PDF/X-4 a device colour space must match the output intent: DeviceRGB is
+  reported without an RGB intent (a Gray intent passed before) and DeviceCMYK without a CMYK one. A shared bad
+  colour-space or shading resource is reported once, with the page count, instead of once per page.
+- `bleed_mm` above 3.53 mm no longer fails `check` with `BLEED_SMALL`: WeasyPrint caps the BleedBox at 10 pt
+  although it lays the page out for the full bleed; render now sets the BleedBox to the real bleed (with or
+  without marks), and `BLEED_SMALL` checks all four sides.
+- Text on PDF/X-4 with an RGB (or Gray) output intent, e.g. the bundled sRGB proof profile, was DeviceCMYK,
+  which PDF/X-4 only allows with a CMYK intent. It is now a neutral grey in the output-intent profile
+  (ICCBased) whose L* matches how the K tint proofed before (caption/colophon at 85 % ≈ L* 33, folio at 70 % ≈
+  L* 46, solved through the profile with LittleCMS); solid black is the profile's true black (RGB 0 0 0) rather
+  than the L* 12 grey a K-only solid proofed as. CMYK intents and PDF/X-1a keep pure K. **PDF/X-4 PDFs rendered
+  earlier with an RGB or Gray output intent now fail `check` with `VECTOR_COLORSPACE`; render them again.**
+- `VECTOR_COLORSPACE` issues for a colour-space or shading resource shared by several pages are reported once,
+  with `page` set to the first page and the page count in the message (they were repeated per page).
+- Unused Lab/ICCBased colour spaces are pruned in Form XObjects as well as on pages.
+- A text page whose body gets less than one line of height (margins, heading, type size) is a `NO_ROOM` error
+  and the body is not drawn, instead of a one-line box spilling into the bottom margin. Fixed-height boxes
+  (title, subtitle, heading, colophon, folio, caption) still keep at least one line, so large type prints.
+- Rendering a book whose id the last fetch reported missing, but that a `photos.json` written after that fetch
+  lists (the album was drafted again), asks for a fetch instead of a `book.yaml` change; the "replace the id"
+  message says that a fetch re-checks.
+- Render fails, instead of drawing misplaced crop marks, if pages ever had different trim sizes.
 - `zinegen spine` / `zg_spine` compute the width for the rounded page count they announce (23 pages perfect
   bound were reported "rounded to 24" with the 23-page width; hardcover 24 → 32 likewise).
 - Text that does not fit its box is cut between lines instead of through the middle of a glyph (every text box

@@ -62,15 +62,30 @@ def source_files(book: Book) -> dict[str, Path]:
         else:
             absent.append(pid)
     if absent:
-        # ids the last fetch could not find anywhere: fetching again cannot help, book.yaml must change
-        gone = [pid for pid in absent if pid in book.missing_ids()]
+        # ids the last fetch could not find anywhere: book.yaml must change, unless the photo has been added to
+        # the album since: photos.json, written after that fetch (by a later init), lists it. Then the missing
+        # list is stale and a fetch helps. An older photos.json says nothing about what the fetch found.
+        gone = [pid for pid in absent if pid in book.missing_ids() and pid not in _album_ids_since_fetch(book)]
         if gone:
             raise FileNotFoundError(f"{len(gone)} photo id(s) in book.yaml are not in the album or the Lightroom "
                                     f"catalog (the last fetch reported them missing): {', '.join(gone)}. Replace "
-                                    "them with ids from the album (photos.json) or remove those pages.")
+                                    "them with ids from the album (photos.json) or remove those pages; if you "
+                                    "have added them to the album since, run `zinegen fetch` again to re-check.")
         raise FileNotFoundError(f"{len(absent)} photo(s) not downloaded yet ({', '.join(absent)}); "
                                 "run `zinegen fetch` first")
     return files
+
+
+def _album_ids_since_fetch(book: Book) -> set[str]:
+    """Photo ids in photos.json when it was written after cache/missing.json (the album drafted again since the
+    fetch that recorded the missing ids); none when it is older, absent or unreadable."""
+    try:
+        if (book.root / "photos.json").stat().st_mtime <= book.missing_file.stat().st_mtime:
+            return set()
+        doc = json.loads((book.root / "photos.json").read_text())
+        return {p["id"] for p in doc.get("photos", []) if isinstance(p, dict) and "id" in p}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return set()
 
 
 def resolve_icc(book: Book) -> Path | None:
@@ -213,6 +228,7 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
                       W=book.trim_w, H=book.trim_h, B=book.bleed, fonts=book.fonts,
                       pt={k: _layout.font_pt(book, k) for k in kinds}, lh=_layout.LINE_HEIGHT,
                       icc=icc_uri, icc_components=", ".join(cinfo["icc_components"] or []),
+                      ink=lambda t: ink(t, icc if icc_uri else None),
                       font_faces=font_faces([book.fonts["body"], book.fonts["caption"], book.fonts["title"]]))
     book.out_dir.mkdir(parents=True, exist_ok=True)
     html_path = book.out_dir / "interior.html"
@@ -230,13 +246,49 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     document.write_pdf(pdf_path, pdf_variant=std, output_intent="--press" if icc_uri else None,
                        jpeg_quality=None, dpi=None, optimize_images=False)
     _verify_images(pdf_path, {im.photo: files[im.photo] for pl in pages for im in pl.images})
-    postprocess(pdf_path, book, marks=book.marks if marks is None else marks, icc=icc)
+    try:
+        postprocess(pdf_path, book, marks=book.marks if marks is None else marks, icc=icc)
+    except RenderError:
+        pdf_path.unlink(missing_ok=True)
+        raise
     rep["pdf"] = str(pdf_path)
     rep["html"] = str(html_path)
     (book.out_dir / "report.json").write_text(json.dumps(rep, indent=2, ensure_ascii=False))
     if log:
         log(f"wrote {pdf_path} ({pdf_path.stat().st_size // 1024} KB), {rep['pages']} pages, {len(rep['issues'])} issues")
     return rep
+
+
+# Lightness (CIE L*) of K-only tints of black on coated paper, as Ghostscript's default CMYK profile renders
+# them: what text looked like on proofs before text on RGB/Gray intents moved out of DeviceCMYK. ink() keeps
+# that hierarchy (body, caption/colophon, folio) on RGB and Gray output intents. Solid black (tint 1) is the
+# exception: it is the profile's own black (0, 0, 0), not the L* 12 grey a K-only solid proofs as.
+K_TINT_LIGHTNESS = ((0.0, 100.0), (0.3, 76.9), (0.5, 61.6), (0.7, 46.3), (0.85, 32.9), (1.0, 12.2))
+
+
+def k_tint_lightness(tint: float) -> float:
+    """L* of a K-only tint (linear between the K_TINT_LIGHTNESS points); 0 for solid black."""
+    if tint >= 1:
+        return 0.0
+    for (t0, l0), (t1, l1) in zip(K_TINT_LIGHTNESS, K_TINT_LIGHTNESS[1:], strict=False):
+        if tint <= t1:
+            return l0 + (l1 - l0) * (max(tint, 0.0) - t0) / (t1 - t0)
+    return 0.0
+
+
+def ink(tint: float, icc: Path | None) -> str:
+    """CSS colour for black ink at `tint` (1 = solid) in the output intent's colour space.
+
+    CMYK intent (or none): `device-cmyk(0 0 0 tint)`, pure K, as on PDF/X-1a. RGB or Gray intent: a neutral in
+    the intent profile (`color(--press …)`, an ICCBased colour space in the PDF) whose L* matches the K tint
+    (k_tint_lightness, solved through the profile with LittleCMS); solid black is the profile's black (0).
+    PDF/X-4 allows a device colour space only when it matches the output intent, so DeviceCMYK text under an RGB
+    intent (the default sRGB proof setup) was not conforming; ICC-based colour is allowed with any intent."""
+    components = color.profile_components(icc) if icc else None
+    if not components or components == ["c", "m", "y", "k"]:
+        return f"device-cmyk(0 0 0 {tint:g})"
+    g = f"{color.neutral_for_lightness(icc, k_tint_lightness(tint)):.4f}"
+    return f"color(--press {' '.join([g] * len(components))})"
 
 
 WORD_JOINER = "⁠"
@@ -283,9 +335,12 @@ def _text_overflow(document) -> list[Issue]:
                 kind = el.get("data-kind")
                 cut = " ".join("".join(t.text for t in lb.descendants() if isinstance(t, boxes.TextBox)).strip()
                                for lb in lines[fit:]).replace(WORD_JOINER, "")
+                if fit == 0:
+                    hint = ". The space for it is less than one line high: use a smaller type size or more room"
+                else:
+                    hint = ". Shorten the text" + (" (a caption box holds 2 lines)" if kind == "caption" else "")
                 issues.append(Issue("TEXT_CLIPPED", f"{kind} needs {len(lines)} lines, its box holds {fit}: "
-                                    f"{cut[:40]!r}{'…' if len(cut) > 40 else ''} is not printed. Shorten the text"
-                                    + (" (a caption box holds 2 lines)" if kind == "caption" else ""),
+                                    f"{cut[:40]!r}{'…' if len(cut) > 40 else ''} is not printed{hint}",
                                     page=int(el.get("data-page"))))
     return issues
 
@@ -376,21 +431,95 @@ def postprocess(pdf_path: Path, book: Book, marks: bool = False, icc: Path | Non
         strict = book.output["standard"] == "pdf/x-1a"
         if not strict:
             _tag_rgb_images(pdf)
-        for page in pdf.pages:
-            cs = page.Resources.get("/ColorSpace")
-            if cs is None:
-                continue
-            content = page.Contents
-            data = content.read_bytes() if not isinstance(content, pikepdf.Array) else b"".join(c.read_bytes() for c in content)
-            used = set(re.findall(rb"/(\S+)\s+(?:cs|CS)\b", data))
-            for name in list(cs.keys()):
-                if name.lstrip("/").encode() not in used:
-                    if strict or str(name).startswith("/lab-"):
-                        del cs[name]
+        prune_color_spaces(pdf, strict)
+        set_bleed(pdf, book.bleed)
         if marks:
             cmyk = icc is not None and color.profile_components(icc) == ["c", "m", "y", "k"]
             add_marks(pdf, _layout.crop_marks(book), book.trim_h, cmyk)
         pdf.save(pdf_path)
+
+
+# Colour space names a content stream uses: `/Name cs|CS`, and `/CS /Name` (or `/ColorSpace /Name`) in an
+# inline image dictionary. A match inside a string only keeps a resource, it never drops one.
+_CS_USE = re.compile(rb"/([^\s/\[\]()<>{}%]+)\s+(?:cs|CS)\b|/(?:CS|ColorSpace)\s*/([^\s/\[\]()<>{}%]+)")
+
+
+def _stream_bytes(obj) -> bytes:
+    import pikepdf
+
+    try:
+        if isinstance(obj, pikepdf.Array):
+            return b"\n".join(c.read_bytes() for c in obj)
+        return obj.read_bytes()
+    except pikepdf.PdfError:
+        return b""
+
+
+def prune_color_spaces(pdf, strict: bool):
+    """Drop colour-space resources that WeasyPrint declares but the content never selects: every unused one on
+    PDF/X-1a (`strict`), only its unused `lab-*` spaces otherwise. Done for each page and for every Form
+    XObject it reaches (WeasyPrint draws opacity, SVG and gradients through Forms). A Form without its own
+    /Resources uses its parent's, so the names it selects count as used by the parent; a resource dictionary
+    shared by several pages or Forms keeps every name any of them uses. Each Form is visited once, so
+    self-referencing resources cannot loop."""
+    import pikepdf
+
+    seen: set = set()
+    direct: list = []            # (resources, names used)
+    indirect: dict = {}          # objgen -> (resources, names used by every owner)
+
+    def names(content: bytes) -> set[bytes]:
+        return {a or b for a, b in _CS_USE.findall(content)}
+
+    def collect(res, content: bytes):
+        if not isinstance(res, pikepdf.Dictionary):
+            return
+        used = names(content)
+        for x in (res.get("/XObject") or {}).values():
+            if not isinstance(x, pikepdf.Stream) or str(x.get("/Subtype")) != "/Form":
+                continue
+            own = x.get("/Resources")
+            if own is None:
+                used |= names(_stream_bytes(x))
+            elif not x.is_indirect or x.objgen not in seen:
+                if x.is_indirect:
+                    seen.add(x.objgen)
+                collect(own, _stream_bytes(x))
+        if res.is_indirect:
+            indirect.setdefault(res.objgen, (res, set()))[1].update(used)
+        else:
+            direct.append((res, used))
+
+    for page in pdf.pages:
+        collect(page.Resources, _stream_bytes(page.obj["/Contents"]) if "/Contents" in page.obj else b"")
+    for res, used in direct + list(indirect.values()):
+        cs = res.get("/ColorSpace")
+        if not isinstance(cs, pikepdf.Dictionary):
+            continue
+        for name in list(cs.keys()):
+            if name.lstrip("/").encode() not in used and (strict or str(name).startswith("/lab-")):
+                del cs[name]
+
+
+def set_bleed(pdf, bleed_mm: float):
+    """Set every BleedBox to the TrimBox grown by the real bleed, and grow the MediaBox to hold it.
+
+    WeasyPrint lays the page out (and sizes the MediaBox) for the full CSS `bleed`, but writes the BleedBox as
+    trim ± min(bleed, 10 pt), so any bleed above 3.53 mm was declared too small (BLEED_SMALL) although the
+    full-bleed photos reach it."""
+    import pikepdf
+
+    b = bleed_mm * 72 / 25.4
+    for page in pdf.pages:
+        tb = [float(v) for v in page.obj["/TrimBox"]]
+        bb = [round(v, 3) for v in (tb[0] - b, tb[1] - b, tb[2] + b, tb[3] + b)]
+        page.obj["/BleedBox"] = pikepdf.Array(bb)
+        mb = [float(v) for v in page.obj["/MediaBox"]]
+        # WeasyPrint's MediaBox is already trim ± bleed (unrounded): snap it to the BleedBox so that rounding
+        # cannot leave the BleedBox a hair outside it; a MediaBox that is really larger (marks) is kept.
+        grown = [min(m, v) if i < 2 else max(m, v) for i, (m, v) in enumerate(zip(mb, bb, strict=True))]
+        page.obj["/MediaBox"] = pikepdf.Array([v if abs(g - v) < 0.01 else g
+                                               for g, v in zip(grown, bb, strict=True)])
 
 
 MARK_LINE_PT = 0.25
@@ -433,14 +562,20 @@ def add_marks(pdf, marks: _layout.Marks, trim_h: float, cmyk: bool):
         h = r + 1.0
         ops.append(f"{p(cx - h, cy)} m {p(cx + h, cy)} l S {p(cx, cy - h)} m {p(cx, cy + h)} l S")
     s = marks.slug * pt
-    form = pikepdf.Stream(pdf, "\n".join(ops).encode())     # every page has the same trim size: one form
+    # One form for every page: the marks (and its BBox) are laid out for one trim size, so a page of another
+    # size would get marks in the wrong place. The book has one trim size; refuse anything else.
+    trims = [[float(v) for v in page.obj["/TrimBox"]] for page in pdf.pages]
+    w, h = trims[0][2] - trims[0][0], trims[0][3] - trims[0][1]
+    if abs(h - trim_h * pt) > 0.01 or any(abs(t[2] - t[0] - w) > 0.01 or abs(t[3] - t[1] - h) > 0.01 for t in trims):
+        raise RenderError("crop marks are drawn for a single trim size, but the pages' TrimBoxes differ "
+                          f"({sorted({(round(t[2] - t[0], 2), round(t[3] - t[1], 2)) for t in trims})} pt)")
+    form = pikepdf.Stream(pdf, "\n".join(ops).encode())
     form["/Type"] = pikepdf.Name.XObject
     form["/Subtype"] = pikepdf.Name.Form
     form["/Resources"] = pikepdf.Dictionary(ColorSpace=pikepdf.Dictionary(Reg=reg))
+    form["/BBox"] = pikepdf.Array([round(v, 3) for v in (-s, -s, w + s, h + s)])
     form = pdf.make_indirect(form)
-    for page in pdf.pages:
-        tb = [float(v) for v in page.obj["/TrimBox"]]
-        form["/BBox"] = pikepdf.Array([round(v, 3) for v in (-s, -s, tb[2] - tb[0] + s, tb[3] - tb[1] + s)])
+    for page, tb in zip(pdf.pages, trims, strict=True):
         page.obj["/MediaBox"] = pikepdf.Array([round(v, 3) for v in (tb[0] - s, tb[1] - s, tb[2] + s, tb[3] + s)])
         if "/CropBox" in page.obj:
             del page.obj["/CropBox"]
