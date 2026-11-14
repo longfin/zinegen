@@ -84,6 +84,45 @@ def profile_components(path: Path) -> list[str]:
     return {"CMYK": ["c", "m", "y", "k"], "RGB": ["r", "g", "b"], "GRAY": ["gray"]}.get(space, ["c", "m", "y", "k"])
 
 
+def neutral_lightness(path: Path, value: float) -> float:
+    """CIE L* of the neutral (v, v, v) (or gray v), 0..1, of an RGB or Gray profile (relative colorimetric)."""
+    return _neutral_ramp(str(path))[round(value * 255)]
+
+
+def neutral_for_lightness(path: Path, lightness: float) -> float:
+    """The neutral value v (0..1) of an RGB or Gray profile whose CIE L* is `lightness`, interpolated between
+    the 256 levels LittleCMS converts (relative colorimetric, so 0 and 1 are the profile's black and white)."""
+    ramp = _neutral_ramp(str(path))
+    if lightness <= ramp[0]:
+        return 0.0
+    for i in range(1, 256):
+        if ramp[i] >= lightness:
+            lo, hi = ramp[i - 1], ramp[i]
+            return (i - 1 + (lightness - lo) / (hi - lo if hi > lo else 1)) / 255
+    return 1.0
+
+
+_RAMPS: dict[str, list[float]] = {}
+
+
+def _neutral_ramp(path: str) -> list[float]:
+    """L* of the 256 neutral levels of a profile, monotonic (cached per profile)."""
+    if path not in _RAMPS:
+        gray = profile_components(Path(path)) == ["gray"]
+        mode = "L" if gray else "RGB"
+        im = Image.new(mode, (256, 1))
+        im.putdata([v if gray else (v, v, v) for v in range(256)])
+        lab = ImageCms.applyTransform(im, ImageCms.buildTransform(
+            ImageCms.ImageCmsProfile(path), ImageCms.createProfile("LAB"), mode, "LAB",
+            renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC))
+        ramp, top = [], 0.0
+        for v in range(256):
+            top = max(top, lab.getpixel((v, 0))[0] * 100 / 255)
+            ramp.append(top)
+        _RAMPS[path] = ramp
+    return _RAMPS[path]
+
+
 def profile_class(path: Path) -> str:
     """ICC device class: 'prtr' (output/printer), 'mntr' (display), 'scnr' (input), 'spac' (colour space)..."""
     return str(ImageCms.ImageCmsProfile(str(path)).profile.device_class).strip()

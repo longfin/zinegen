@@ -23,9 +23,9 @@ html, body { margin: 0; padding: 0; }
    word: WeasyPrint does not support `word-break: keep-all` (it drops the declaration). `overflow-wrap`
    still breaks a word that is wider than its box. Font sizes and line heights come from layout.py, which cuts
    every text box to a whole number of lines.
-   Text is black ink at a tint: ink(t) (render.ink) is device-cmyk K on a CMYK output intent (and without one), and
-   the same lightness in the output-intent profile (ICCBased) on an RGB or Gray intent, where PDF/X-4 does not
-   allow DeviceCMYK. #}
+   Text is black ink at a tint: ink(t) (render.ink) is device-cmyk K on a CMYK output intent (and without one). On
+   an RGB or Gray intent, where PDF/X-4 does not allow DeviceCMYK, it is a neutral in the output-intent profile
+   (ICCBased) whose L* matches how that K tint proofs; solid black is the profile's black. #}
 .t { position: absolute; color: {{ ink(1) }}; white-space: pre-wrap; overflow: hidden; overflow-wrap: anywhere; }
 .title { font-family: "{{ fonts.title }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ pt.title }}pt; line-height: {{ lh.title }}; letter-spacing: 0.02em; }
 .subtitle { font-family: "{{ fonts.body }}", "Noto Sans CJK KR", "Noto Sans KR", "Nanum Gothic", sans-serif; font-size: {{ pt.subtitle }}pt; line-height: {{ lh.subtitle }}; }

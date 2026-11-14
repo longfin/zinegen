@@ -63,8 +63,9 @@ def source_files(book: Book) -> dict[str, Path]:
             absent.append(pid)
     if absent:
         # ids the last fetch could not find anywhere: book.yaml must change, unless the photo has been added to
-        # the album since (it is in photos.json now), in which case the missing list is stale and a fetch helps
-        gone = [pid for pid in absent if pid in book.missing_ids() and pid not in _album_ids(book)]
+        # the album since: photos.json, written after that fetch (by a later init), lists it. Then the missing
+        # list is stale and a fetch helps. An older photos.json says nothing about what the fetch found.
+        gone = [pid for pid in absent if pid in book.missing_ids() and pid not in _album_ids_since_fetch(book)]
         if gone:
             raise FileNotFoundError(f"{len(gone)} photo id(s) in book.yaml are not in the album or the Lightroom "
                                     f"catalog (the last fetch reported them missing): {', '.join(gone)}. Replace "
@@ -75,9 +76,12 @@ def source_files(book: Book) -> dict[str, Path]:
     return files
 
 
-def _album_ids(book: Book) -> set[str]:
-    """Photo ids in photos.json (the album as last drafted), or none when it is absent or unreadable."""
+def _album_ids_since_fetch(book: Book) -> set[str]:
+    """Photo ids in photos.json when it was written after cache/missing.json (the album drafted again since the
+    fetch that recorded the missing ids); none when it is older, absent or unreadable."""
     try:
+        if (book.root / "photos.json").stat().st_mtime <= book.missing_file.stat().st_mtime:
+            return set()
         doc = json.loads((book.root / "photos.json").read_text())
         return {p["id"] for p in doc.get("photos", []) if isinstance(p, dict) and "id" in p}
     except (OSError, ValueError, TypeError, AttributeError):
@@ -224,7 +228,7 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
                       W=book.trim_w, H=book.trim_h, B=book.bleed, fonts=book.fonts,
                       pt={k: _layout.font_pt(book, k) for k in kinds}, lh=_layout.LINE_HEIGHT,
                       icc=icc_uri, icc_components=", ".join(cinfo["icc_components"] or []),
-                      ink=lambda t: ink(t, cinfo["icc_components"] if icc_uri else None),
+                      ink=lambda t: ink(t, icc if icc_uri else None),
                       font_faces=font_faces([book.fonts["body"], book.fonts["caption"], book.fonts["title"]]))
     book.out_dir.mkdir(parents=True, exist_ok=True)
     html_path = book.out_dir / "interior.html"
@@ -255,16 +259,35 @@ def render(book: Book, log=None, marks: bool | None = None) -> dict:
     return rep
 
 
-def ink(tint: float, components: list[str] | None) -> str:
+# Lightness (CIE L*) of K-only tints of black on coated paper, as Ghostscript's default CMYK profile renders
+# them: what text looked like on proofs before text on RGB/Gray intents moved out of DeviceCMYK. ink() keeps
+# that hierarchy (body, caption/colophon, folio) on RGB and Gray output intents. Solid black (tint 1) is the
+# exception: it is the profile's own black (0, 0, 0), not the L* 12 grey a K-only solid proofs as.
+K_TINT_LIGHTNESS = ((0.0, 100.0), (0.3, 76.9), (0.5, 61.6), (0.7, 46.3), (0.85, 32.9), (1.0, 12.2))
+
+
+def k_tint_lightness(tint: float) -> float:
+    """L* of a K-only tint (linear between the K_TINT_LIGHTNESS points); 0 for solid black."""
+    if tint >= 1:
+        return 0.0
+    for (t0, l0), (t1, l1) in zip(K_TINT_LIGHTNESS, K_TINT_LIGHTNESS[1:], strict=False):
+        if tint <= t1:
+            return l0 + (l1 - l0) * (max(tint, 0.0) - t0) / (t1 - t0)
+    return 0.0
+
+
+def ink(tint: float, icc: Path | None) -> str:
     """CSS colour for black ink at `tint` (1 = solid) in the output intent's colour space.
 
-    CMYK intent (or none): `device-cmyk(0 0 0 tint)`, pure K, as on PDF/X-1a. RGB or Gray intent: the same
-    lightness through the intent profile (`color(--press …)`, an ICCBased colour space in the PDF). PDF/X-4 allows
-    a device colour space only when it matches the output intent, so DeviceCMYK text under an RGB intent (the
-    default sRGB proof setup) was not conforming; ICC-based colour is allowed with any intent."""
+    CMYK intent (or none): `device-cmyk(0 0 0 tint)`, pure K, as on PDF/X-1a. RGB or Gray intent: a neutral in
+    the intent profile (`color(--press …)`, an ICCBased colour space in the PDF) whose L* matches the K tint
+    (k_tint_lightness, solved through the profile with LittleCMS); solid black is the profile's black (0).
+    PDF/X-4 allows a device colour space only when it matches the output intent, so DeviceCMYK text under an RGB
+    intent (the default sRGB proof setup) was not conforming; ICC-based colour is allowed with any intent."""
+    components = color.profile_components(icc) if icc else None
     if not components or components == ["c", "m", "y", "k"]:
         return f"device-cmyk(0 0 0 {tint:g})"
-    g = f"{1 - tint:.3g}"
+    g = f"{color.neutral_for_lightness(icc, k_tint_lightness(tint)):.4f}"
     return f"color(--press {' '.join([g] * len(components))})"
 
 

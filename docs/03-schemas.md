@@ -115,11 +115,11 @@ they differ only on x-1a when `max_dpi` downsampled the photo. Layout geometry a
 | `LOW_DPI` | warning | layout |
 | `BAD_DPI` | error | layout |
 | `GUTTER_CROSSING` | warning | layout (perfect/hardcover only) |
-| `NO_ROOM` | error | layout (margins, `gap_mm` or caption leave a photo box under 5 mm; photos not placed) |
+| `NO_ROOM` | error | layout (margins, `gap_mm` or caption leave a photo box under 5 mm; photos not placed. Also: a text page's body has less than one line of height; the body is not printed) |
 | `NO_OUTPUT_PROFILE` | error | render: x-4 with `output.icc` unset (a set but unresolvable profile fails the render instead) |
 | `DPI_ABOVE_NEED` | info | render: x-4 placements above 1.5 × `output.max_dpi` (default 350); x-4 embeds source bytes unchanged. Suggests a smaller `source.size` only if every placement stays ≥ 300 dpi with it |
 | `ORIENTATION_REENCODED` | warning | render: x-4 photo with an EXIF orientation tag; rotated and JPEG-encoded once (`output.jpeg_quality`) to embed it upright, so it is not the source bytes. x-1a applies the orientation during its single CMYK conversion (no issue) |
-| `TEXT_CLIPPED` | warning | render: a text box (caption, body, colophon, title, ...) has more lines than fit; `page` is set. Boxes hold a whole number of lines (a caption two), so the cut falls between lines. A space less than one line high gets a box of 0 lines ("holds 0"): nothing is printed rather than drawn past the space |
+| `TEXT_CLIPPED` | warning | render: a text box (caption, body, colophon, title, ...) has more lines than fit; `page` is set. Boxes hold a whole number of lines (a caption two), so the cut falls between lines. Fixed-height boxes (title, subtitle, heading, colophon, folio) keep at least one line even when the type is taller |
 | `DISPLAY_OUTPUT_PROFILE` | warning | render: `output.icc` is not a printer-class (`prtr`) ICC profile, e.g. the bundled `sRGB2014.icc` (display class). Valid PDF/X-4, but the output intent describes a screen |
 | `NO_OUTPUT_INTENT`, `NO_DEST_PROFILE`, `NO_PDFX_VERSION`, `PDF_VERSION` | error | check |
 | `NO_TRIMBOX`, `TRIMBOX_SIZE`, `BLEED_SMALL` | error | check (`BLEED_SMALL`: the BleedBox is less than `bleed_mm` beyond the TrimBox on any side) |
@@ -160,4 +160,8 @@ they differ only on x-1a when `max_dpi` downsampled the photo. Layout geometry a
   Gray intent; a shared colour-space or shading resource is reported once (first page, page count in the
   message) instead of once per page. `check` also inspects inline images, annotation appearance streams and
   Type 3 glyphs, and no longer reports a Type 3 font as `FONT_NOT_EMBEDDED`. Text on x-4 with an RGB or Gray
-  output intent is drawn in the intent profile (ICCBased) instead of DeviceCMYK.
+  output intent is drawn as a lightness-matched neutral in the intent profile (ICCBased) instead of DeviceCMYK,
+  so **x-4 PDFs rendered earlier with an RGB or Gray output intent now fail `check` with `VECTOR_COLORSPACE` and
+  must be rendered again**. For a resource shared by several pages, a `VECTOR_COLORSPACE` issue's `page` is now
+  the first page (the message gives the page count). `NO_ROOM` also covers a text page body with less than one
+  line of height.
