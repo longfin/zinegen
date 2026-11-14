@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-11-14
 
 **Rebuild PDFs made with 0.1.0.** WeasyPrint re-encoded every embedded JPEG in 0.1.0 (a second lossy
 generation on PDF/X-1a, and on PDF/X-4 the source bytes were not kept), and PDF/X-4 tagged Display P3 photos

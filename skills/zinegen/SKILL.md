@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires the zinegen CLI on PATH (uv tool install zinegen) with pango and Ghostscript, and a Lightroom sign-in through lr-mcp
 metadata:
   author: longfin
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 # zinegen — agent-driven photobook typesetting
