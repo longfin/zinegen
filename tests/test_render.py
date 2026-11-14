@@ -363,8 +363,12 @@ def test_check_catches_weasyprint_marks(book_dir: Path, request, kind: str):
         assert not any(c == "VECTOR_COLORSPACE" for c, _ in found)
     else:
         assert not res["ok"]
-        assert ("VECTOR_COLORSPACE", "error") in found
-        assert ("TRANSPARENCY", "error" if kind == "x-1a" else "warning") in found
+        # evidence from inside the marks Form, not the page-level ICC/Lab resources this unpostprocessed PDF
+        # also declares (those alone would raise VECTOR_COLORSPACE on x-1a)
+        assert any(i["code"] == "VECTOR_COLORSPACE" and i["level"] == "error"
+                   and "DeviceRGB colour operator(s) in form XObject" in i["message"] for i in res["issues"])
+        assert any(i["code"] == "TRANSPARENCY" and i["level"] == ("error" if kind == "x-1a" else "warning")
+                   and "transparency group in form XObject" in i["message"] for i in res["issues"])
     assert any("form XObject" in i["message"] for i in res["issues"] if i["code"] == "TRANSPARENCY")
 
 

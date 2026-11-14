@@ -328,12 +328,19 @@ def zg_spine(
 
 def _reject_unknown_arguments():
     """An argument the tool does not have (`spread` for `spreads`, `standard` on zg_render) is an error, not
-    silently dropped: forbid extra fields in each tool's argument model and say so in its input schema."""
-    for tool in mcp._tool_manager.list_tools():
-        model = tool.fn_metadata.arg_model
-        model.model_config["extra"] = "forbid"
-        model.model_rebuild(force=True)
-        tool.parameters["additionalProperties"] = False
+    silently dropped: forbid extra fields in each tool's argument model and say so in its input schema.
+
+    This reaches into private MCP SDK attributes. If an SDK change breaks that, the server still starts and
+    unknown arguments are ignored again (test_tool_schemas_forbid_extra_arguments catches it on CI)."""
+    try:
+        for tool in mcp._tool_manager.list_tools():
+            model = tool.fn_metadata.arg_model
+            model.model_config["extra"] = "forbid"
+            model.model_rebuild(force=True)
+            tool.parameters["additionalProperties"] = False
+    except Exception as e:  # noqa: BLE001 - never keep the server from starting over this
+        print(f"zinegen: cannot make MCP tools reject unknown arguments ({type(e).__name__}: {e}); "
+              "they will be ignored", file=sys.stderr)
 
 
 _reject_unknown_arguments()

@@ -39,7 +39,7 @@ tests/           pytest (no network)
 ```bash
 uv venv && . .venv/bin/activate && uv pip install -e ".[dev]"
 zinegen doctor                      # pango, ghostscript, ICC profiles, Lightroom sign-in
-python -m pytest -q                 # unit tests (spec, layout, presets)
+python -m pytest -q                 # spec/layout/presets, real renders + check on both standards, MCP server, lr compat, release checks
 zinegen build books/<name>          # end-to-end on a real album (needs Lightroom sign-in); books/ is git-ignored
 ```
 
@@ -56,6 +56,9 @@ lib dir automatically. Ghostscript (`gs`) is required for proofs.
   If the renderer cannot express something, extend `layout.py`/`spec.py` and add a template.
 - **Keep geometry explicit.** All image placement is computed in `layout.py` in millimetres so that dpi and
   gutter crossing can be reported. Do not move placement into CSS (`object-fit` etc.).
+- **Korean keep-all is not CSS.** WeasyPrint 70 silently drops `word-break: keep-all`, so the `keep_all` Jinja
+  filter (`render.keep_all`, U+2060 WORD JOINER inside Hangul words) plus `overflow-wrap: anywhere` on `.t`
+  does it. Do not move it back to CSS.
 - **PDF/X invariants** (checked by `check.py`): an output intent with an embedded profile, TrimBox and BleedBox
   on every page, CMYK/Gray images only for X-1a, ICC-tagged RGB for X-4, no transparency on X-1a, all fonts
   embedded. Any change to `render.py` or the template must keep `zinegen check` green on both standards.
@@ -66,7 +69,8 @@ lib dir automatically. Ghostscript (`gs`) is required for proofs.
   it to `output.max_dpi`, converts P3 -> CMYK and encodes it once (cached in `cache/cmyk/`); X-4 embeds the
   original bytes. The one exception is an X-4 photo with an EXIF orientation tag: it is rotated and encoded once
   (`cache/upright/`) and reported `ORIENTATION_REENCODED`. WeasyPrint must pass the prepared files through
-  untouched: keep `write_pdf(..., jpeg_quality=None, dpi=None, optimize_images=False)` and
+  untouched: `render.render` lays out with `HTML.render(**opts)` (needed for `TEXT_CLIPPED`) and then calls
+  `Document.write_pdf(...)`; keep `jpeg_quality=None, dpi=None, optimize_images=False` in both calls, and
   `image-orientation: none` on the photo `<img>` in the template (without any one of them WeasyPrint re-encodes
   JPEGs: any `jpeg_quality` re-encodes all, `dpi` those above it, and the default `from-image` every JPEG
   with an EXIF block, i.e. every Lightroom rendition). `render._verify_images` fails the render when a placed
@@ -103,4 +107,5 @@ finish with `zg_check` green and report warnings (low dpi, gutter crossing, padd
 - Cover PDF (spine from `zinegen spine`, wrap-around layout, separate PDF/X).
 - Local review GUI: spread viewer with comments the agent can read; no editing.
 - Upstream `lr/compat.py` to lr-mcp.
-- Real preflight comparison (Acrobat Pro / callas) and fixes for anything it flags.
+- Real preflight comparison (Acrobat Pro / callas) and fixes for anything it flags. `check.py` is a structural
+  self-check (boxes, output intent, colour spaces, transparency, fonts); it does not replace a real preflight.

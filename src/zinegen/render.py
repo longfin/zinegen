@@ -6,6 +6,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import jinja2
@@ -254,8 +255,18 @@ def keep_all(text: str) -> str:
 
 def text_overflow(document) -> list[Issue]:
     """TEXT_CLIPPED for every text box whose lines do not all fit. Boxes are cut to whole lines in layout.py,
-    so the clip falls between lines; this says which text lost lines. Reads WeasyPrint's laid-out boxes:
-    each `.t` block (data-page, data-kind) and its line boxes."""
+    so the clip falls between lines; this says which text lost lines. Reads WeasyPrint's laid-out boxes
+    (private API: `page._page_box`). If a WeasyPrint change breaks that, the detection is skipped with a note
+    on stderr; the render itself never fails over it."""
+    try:
+        return _text_overflow(document)
+    except Exception as e:  # noqa: BLE001
+        print(f"zinegen: TEXT_CLIPPED detection skipped, WeasyPrint's layout boxes could not be read "
+              f"({type(e).__name__}: {e})", file=sys.stderr)
+        return []
+
+
+def _text_overflow(document) -> list[Issue]:
     from weasyprint.formatting_structure import boxes
 
     issues, seen = [], set()
