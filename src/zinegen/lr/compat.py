@@ -176,9 +176,14 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
     """Download renditions into `dest/<asset_id>.jpg` with a sidecar `dest/index.json`.
 
     A photo is skipped when its cached rendition has the same size and the same `edited_at`, so rating
-    and flag changes do not trigger a download. An index entry written by zinegen 0.2.0 has no
-    `edited_at`; it still counts as current while its `changed_at` matches, and is then upgraded in
-    place. Returns the summary {downloaded, skipped, errors}.
+    and flag changes do not trigger a download; a photo with no edit time at all is always downloaded.
+    An index entry written by zinegen 0.2.0 has no `edited_at`; it still counts as current while its
+    `changed_at` matches, and is then upgraded in place. Returns the summary {downloaded, skipped, errors}.
+
+    Each photo gets one `lr.rendition` call: lr-mcp already retries a GET on dropped connections and
+    429/502/503/504. The one case retried here is a 2560/fullsize rendition that lr-mcp asked Lightroom to
+    generate and that was not ready by the end of its polling, or whose generate request (a POST, which
+    lr-mcp never retries) was refused with 429/5xx; see `_retry_rendition`.
     """
     if size not in ("640", "1280", "2048", "2560", "fullsize"):
         raise LrError("size must be one of 640, 1280, 2048, 2560, fullsize")
@@ -193,10 +198,11 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
         path = dest / f"{p.id}.jpg"
         entry = index.get(p.id)
         if not force and entry and path.exists() and entry.get("size") == size:
+            # an unknown edit time means download again, as lr-mcp's own cache does
             if "edited_at" in entry:
-                current = entry["edited_at"] == p.edited_at
+                current = p.edited_at is not None and entry["edited_at"] == p.edited_at
             else:  # 0.2.0 entry: only changed_at was recorded
-                current = entry.get("changed_at") == p.changed_at
+                current = p.changed_at is not None and entry.get("changed_at") == p.changed_at
                 if current:
                     index[p.id] = {**entry, "edited_at": p.edited_at}
                     upgraded = True
@@ -212,17 +218,16 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
 
     def fetch(job):
         p, path = job
-        attempts = 3
-        for attempt in range(attempts):
+        for attempt in range(2):
             try:
                 data = lr.rendition(p.id, size)
             except LrError as e:
-                if attempt == attempts - 1:
-                    with lock:
-                        errors[p.id] = str(e)
-                else:
-                    time.sleep(2 * (attempt + 1))
-                continue
+                if attempt == 0 and _retry_rendition(size, e):
+                    time.sleep(2)
+                    continue
+                with lock:
+                    errors[p.id] = str(e)
+                return
             _atomic_write(path, data)  # never leave a truncated JPEG under the final name
             with lock:
                 index[p.id] = {"size": size, "changed_at": p.changed_at, "edited_at": p.edited_at, "bytes": len(data),
@@ -239,6 +244,18 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
     with lock:
         save_index()
     return {"downloaded": len(jobs) - len(errors), "skipped": len(unique) - len(jobs), "errors": errors}
+
+
+# lr_mcp.client.rendition messages: "Rendition <kind> for <id> failed (<status>): ..." after polling, and
+# "Generating the <kind> rendition failed (<status>): ..." when the (unretried) generate POST is refused.
+_NOT_READY = re.compile(r"^Rendition \S+ for \S+ failed \(404\)|^Generating the \S+ rendition failed \((?:429|5\d\d)\)")
+
+
+def _retry_rendition(size: str, e: LrError) -> bool:
+    """True for the failures lr-mcp does not retry itself and a second call can fix: a generated size
+    (2560/fullsize) still not ready after lr-mcp's polling, or its generate request refused as busy.
+    A 404 on a stored size means the photo is gone, and anything else lr-mcp has already retried."""
+    return size in ("2560", "fullsize") and bool(_NOT_READY.match(str(e)))
 
 
 def _atomic_write(path: Path, data: bytes) -> None:

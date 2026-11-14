@@ -70,7 +70,8 @@ Written by `zinegen init`; read by agents when sequencing.
 `changed_at` is Lightroom's `changedAtTime` (else `userUpdated`): it moves on any change to the photo,
 a rating or flag included. `edited_at` (added after 0.2.0) is the time of the last develop edit, crop included:
 `develop.userUpdated`, else `userUpdated`, else `changedAtTime`, as lr-mcp's download cache uses. `zinegen fetch`
-downloads a rendition again only when `edited_at` moved. Older files lack `edited_at`; readers treat it as absent.
+skips a photo whose cached rendition has the same size and `edited_at` (a photo with no edit time at all is
+always downloaded); a size change, a missing file or `--force` downloads it again. Older files lack `edited_at`; readers treat it as absent.
 
 `photos` is in the album's own order. `cropped` is the post-crop size reported by Lightroom; the embedded
 rendition's pixel size is authoritative for layout. `keywords` is a list of keyword strings; 0.1.0 wrote

@@ -117,7 +117,7 @@ books/<name>/
 
 ## Status
 
-Alpha (0.1.0). Interior PDF for a single album, A5 perfect binding verified end to end against a real album;
+Alpha (0.2.0). Interior PDF for a single album, A5 perfect binding verified end to end against a real album;
 the PDF/X output passes the built-in structural check but has not yet been through Acrobat/callas preflight.
 Not yet: cover PDF with spine, review GUI, moving the Lightroom helpers onto an lr-mcp API (longfin/lr-mcp#19, #20).
 See [CHANGELOG.md](CHANGELOG.md).

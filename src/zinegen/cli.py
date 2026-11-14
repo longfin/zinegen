@@ -57,6 +57,9 @@ def cmd_presets(_):
 
 COUNT_SECONDS = 60   # time spent counting photos per listing; MCP clients time out at about 120 s
 COUNT_WORKERS = 6
+# lr-mcp gives up early, raising, when its next retry would start after the deadline; that wait is at most
+# 13.5 s (backoff) or 10 s (Retry-After). An error this close to the deadline is a count that ran out of time.
+COUNT_RETRY_MARGIN = 15
 
 
 def list_albums(query: str | None = None) -> list[dict]:
@@ -96,7 +99,8 @@ def album_counts(albums: list[dict], seconds: float = COUNT_SECONDS,
         try:
             return lr.album_asset_count(alb["id"], alb.get("updated"), deadline)
         except Exception as e:  # noqa: BLE001 - one bad album or response must not lose the listing
-            return None if time.monotonic() > deadline else e   # cut short by the deadline: late, not broken
+            # cut short by the deadline, or abandoned because the next retry would pass it: late, not broken
+            return None if time.monotonic() + COUNT_RETRY_MARGIN > deadline else e
 
     with ThreadPoolExecutor(COUNT_WORKERS) as ex:
         results = list(ex.map(count, albums))
@@ -120,7 +124,8 @@ def photo_count(counts: dict[str, int], album_id: str) -> str:
 
 def cmd_albums(a):
     albums = list_albums(a.query)
-    counts, note = album_counts(albums) if a.counts else ({}, "")
+    hint = "use a narrower query" if a.query else "narrow the listing with a query"
+    counts, note = album_counts(albums, hint=hint) if a.counts else ({}, "")
     for alb in albums:
         line = f"{alb['id']}  {alb.get('payload', {}).get('name', '')}  [{alb['payload'].get('assetSortOrder')}]"
         print(line + (f"  {photo_count(counts, alb['id'])}" if a.counts else ""))

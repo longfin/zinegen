@@ -161,8 +161,9 @@ def zg_list_albums(
             for alb in albums]
     if not include_counts:
         return "\n".join(rows)
-    counts, note = cli.album_counts(albums, hint="call again to count the rest (finished counts are cached), "
-                                                 "or narrow with query")
+    hint = "call again to count the rest (finished counts are cached), or " + (
+        "use a narrower query" if query else "narrow with query")
+    counts, note = cli.album_counts(albums, hint=hint)
     rows = [f"{row} | {cli.photo_count(counts, alb['id'])}" for row, alb in zip(rows, albums, strict=True)]
     if note:
         rows.append(_for_agent(note))

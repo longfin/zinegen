@@ -48,22 +48,46 @@ def test_fetch_renditions_retry_clears_error_and_writes_index(tmp_path, monkeypa
 
     def rendition(asset_id, size):
         calls[asset_id] = calls.get(asset_id, 0) + 1
-        if asset_id.endswith("1") and calls[asset_id] == 1:
-            raise compat.LrError("transient")
+        if asset_id.endswith("1") and calls[asset_id] == 1:   # generated, not ready by the end of polling
+            raise compat.LrError(f"Rendition {size} for {asset_id} failed (404): None")
         if asset_id.endswith("2"):
-            raise compat.LrError("permanent")
+            raise compat.LrError(f"Rendition {size} for {asset_id} failed (500): boom")
         return b"jpeg"
 
     monkeypatch.setattr(compat.lr, "rendition", rendition)
     monkeypatch.setattr(compat.time, "sleep", lambda s: None)
     photos = [_Photo(0), _Photo(1), _Photo(2)]
-    res = compat.fetch_renditions(photos, tmp_path, size="640", workers=2)
+    res = compat.fetch_renditions(photos, tmp_path, size="fullsize", workers=2)
 
     assert set(res["errors"]) == {photos[2].id}       # the retried download is not an error
     assert res["downloaded"] == 2
-    assert calls[photos[2].id] == 3
+    assert calls == {photos[0].id: 1, photos[1].id: 2, photos[2].id: 1}
     index = json.loads((tmp_path / "index.json").read_text())
     assert set(index) == {photos[0].id, photos[1].id}
+
+
+@pytest.mark.parametrize("size, message, attempts", [
+    # lr-mcp already retried these GETs (dropped connections, 429/502/503/504) or they cannot succeed
+    ("fullsize", "Rendition fullsize for {id} failed (503): busy", 1),
+    ("fullsize", "Rendition fullsize for {id} failed (500): boom", 1),
+    ("fullsize", "GET https://lr.adobe.io/v2/x failed after 6 attempts: TimeoutError()", 1),
+    ("640", "Rendition 640 for {id} failed (404): None", 1),               # a stored size: the photo is gone
+    # what lr-mcp does not retry: generation not finished after its polling, or the generate POST refused
+    ("fullsize", "Rendition fullsize for {id} failed (404): None", 2),
+    ("2560", "Generating the 2560 rendition failed (503): busy", 2),
+    ("2560", "Generating the 2560 rendition failed (403): denied", 1),
+])
+def test_fetch_renditions_attempts_per_photo(tmp_path, monkeypatch, size, message, attempts):
+    calls = []
+
+    def rendition(asset_id, size):
+        calls.append(asset_id)
+        raise compat.LrError(message.format(id=asset_id))
+
+    monkeypatch.setattr(compat.lr, "rendition", rendition)
+    monkeypatch.setattr(compat.time, "sleep", lambda s: None)
+    res = compat.fetch_renditions([_Photo(0)], tmp_path, size=size, workers=1)
+    assert len(calls) == attempts and set(res["errors"]) == {_Photo(0).id}
 
 
 def test_fetch_renditions_index_survives_interruption(tmp_path, monkeypatch):
@@ -143,6 +167,17 @@ def test_fetch_renditions_concurrent_writers_of_one_photo(tmp_path, monkeypatch)
     assert not list(tmp_path.glob(".*.part"))
 
 
+def test_lr_mcp_state_is_isolated():
+    """conftest points lr-mcp at a temporary home, so the real sign-in is never loaded."""
+    import os
+    from pathlib import Path
+
+    from lr_mcp import client as lr
+    assert lr.HOME == Path(os.environ["LR_MCP_HOME"]) and lr.HOME.name.startswith("zinegen-test-lr-mcp-")
+    assert lr.HOME != lr._default_home()   # compares paths only; the real directory is never read
+    assert not (lr.HOME / ".env").exists() and not lr.TOKEN_FILE.exists()
+
+
 def _edited_photo(changed, user=None, develop=None):
     """A photo as the Partner API describes it: changedAtTime moves on any change, ratings included."""
     payload = {"changedAtTime": changed, "importSource": {"fileName": "IMG_0.jpg"}}
@@ -204,6 +239,21 @@ def test_old_index_entry_is_honoured_and_upgraded(tmp_path, renditions):
     # from now on a rating change is recognised as such
     assert compat.fetch_renditions([_edited_photo("c2", "u2", "d1")], tmp_path, size="640")["skipped"] == 1
     assert renditions == []
+
+
+def test_unknown_edit_time_downloads_again(tmp_path, renditions):
+    """No timestamp at all from Lightroom: the cache cannot tell, so download (as lr-mcp's cache does)."""
+    bare = compat._photo({"id": "a" * 32, "subtype": "image", "payload": {}})
+    assert bare.edited_at is None and bare.changed_at is None
+    compat.fetch_renditions([bare], tmp_path, size="640")
+    assert compat.fetch_renditions([bare], tmp_path, size="640")["downloaded"] == 1
+    _old_index(tmp_path, None)                          # a 0.2.0 entry recorded without a time either
+    assert compat.fetch_renditions([bare], tmp_path, size="640")["downloaded"] == 1
+    assert len(renditions) == 3
+    # any timestamp is enough to cache: a photo with only changedAtTime is fetched once
+    dated = _edited_photo("c1")
+    compat.fetch_renditions([dated], tmp_path, size="640")
+    assert compat.fetch_renditions([dated], tmp_path, size="640")["skipped"] == 1 and len(renditions) == 4
 
 
 def test_old_index_entry_with_another_change_downloads(tmp_path, renditions):

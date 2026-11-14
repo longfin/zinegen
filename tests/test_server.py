@@ -582,6 +582,22 @@ def test_count_error_after_the_deadline_is_late(albums):
     assert counts == {} and note.startswith("1 of 1 albums not counted") and "could not" not in note
 
 
+def test_count_given_up_before_the_deadline_is_late(albums):
+    """lr-mcp raises early when its next retry would start after the deadline: still a late count."""
+    albums["results"][C2] = compat.LrError("GET https://lr.adobe.io/v2/x failed after 1 attempt: TimeoutError()")
+    counts, note = cli.album_counts([{"id": C2, "updated": "u2"}], seconds=5, hint="call again")
+    assert counts == {} and note == "1 of 1 albums not counted, time limit of 5 s reached: call again"
+
+
+def test_count_hint_with_a_query(albums, capsys):
+    albums["results"][C1] = None
+    assert "or use a narrower query" in text(call("zg_list_albums", {"query": "autumn", "include_counts": True}))
+    assert "narrow with query" in text(call("zg_list_albums", {"include_counts": True}))
+    assert cli.main(["albums", "autumn", "--counts"]) == 0
+    err = capsys.readouterr().err
+    assert "use a narrower query" in err and "narrow the listing" not in err
+
+
 def test_list_albums_rejects_unknown_arguments(albums):
     res = call("zg_list_albums", {"counts": True})
     assert res.is_error and "Extra inputs are not permitted" in text(res)

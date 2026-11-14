@@ -14,12 +14,18 @@
 
 ### Changed
 
-- Requires lr-mcp 0.4 (for `album_asset_count`). Its client also retries GETs on connection drops and
-  429/5xx responses.
+- Requires lr-mcp 0.4 (for `album_asset_count`). Its client retries GETs (6 attempts with backoff) on dropped
+  connections and 429/502/503/504 responses.
+- `fetch` no longer retries a rendition three times itself, which on top of lr-mcp's retries made one photo
+  wait minutes during an outage. It retries once only what lr-mcp does not: a 2560/fullsize rendition still
+  being generated after lr-mcp's 60 s of polling, or a generate request refused with 429/5xx. Worst case per
+  photo (4 photos at a time): a persistent 503 about 25–50 s, a stalled connection about 3.5 min (6 × 30 s
+  timeouts plus backoff), a full-size rendition that never becomes ready about 2 min.
 - `fetch` decides whether a cached rendition is current by `edited_at` instead of `changed_at`, so changing a
   rating or flag in Lightroom no longer downloads the photo again. Caches from 0.2.0 stay valid: an entry
   without `edited_at` is current while its `changed_at` matches and then records `edited_at`. A photo whose
   rating, flag or edit changed between the 0.2.0 fetch and the first fetch after upgrading is downloaded once.
+  A photo for which Lightroom reports no edit time at all is downloaded on every fetch, as lr-mcp does.
 
 ## 0.2.0 — 2026-11-14
 

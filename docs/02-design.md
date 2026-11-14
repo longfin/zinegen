@@ -6,7 +6,7 @@
 - 이미지 소스: lr-mcp 렌디션 JPEG(fullsize). 로컬 캐시
 - 실행 형태: Python 패키지 하나 = CLI + MCP 서버 + 스킬. Claude Code와 Codex 양쪽에서 같은 MCP/스킬 사용
 - Adobe 앱 비의존. lr-mcp 패키지는 라이브러리로 의존(인증·HTTP 재사용)
-- lr-mcp에 없는 API(앨범 순서, 캡션, 캐시)는 `zinegen.lr.compat`에 호환 구현 후 업스트림(lr-mcp 이슈 #9 앨범 순서, #10 캡션·크롭, #11 캐시). lr-mcp 0.4가 이 기능을 MCP 도구 안에 갖췄고, 남은 일은 구조화된 함수 API(longfin/lr-mcp#19)와 다운로더 보강(longfin/lr-mcp#20)
+- 앨범 순서, 캡션·키워드·크롭 크기, 렌디션 캐시는 `zinegen.lr.compat`이 `lr_mcp.client` 위에서 Python 값으로 만든다. lr-mcp 0.4는 같은 기능을 MCP 도구(텍스트 출력) 안에만 갖췄으므로, 구조화된 함수 API(longfin/lr-mcp#19)와 다운로더 보강(longfin/lr-mcp#20)이 생기면 그쪽으로 옮긴다
 - 텍스트: 에이전트가 초안, 사용자는 북 스펙(YAML)을 직접 편집
 
 ## 파이프라인
