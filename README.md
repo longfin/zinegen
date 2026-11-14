@@ -82,7 +82,7 @@ Both agents also need the `lightroom` MCP server from lr-mcp for browsing and ra
 ## Usage
 
 ```bash
-zinegen albums autumn                                   # find the album id
+zinegen albums autumn                                   # find the album id (--counts adds photo counts)
 zinegen init --album <album id> --dir books/autumn       # draft book.yaml + photos.json
 $EDITOR books/autumn/book.yaml                           # sequence, templates, captions
 zinegen build books/autumn                               # fetch + render + proof + check
@@ -117,9 +117,9 @@ books/<name>/
 
 ## Status
 
-Alpha (0.1.0). Interior PDF for a single album, A5 perfect binding verified end to end against a real album;
+Alpha (0.2.0). Interior PDF for a single album, A5 perfect binding verified end to end against a real album;
 the PDF/X output passes the built-in structural check but has not yet been through Acrobat/callas preflight.
-Not yet: cover PDF with spine, review GUI, upstreaming the Lightroom helpers to lr-mcp (issues #9–#11 there).
+Not yet: cover PDF with spine, review GUI, moving the Lightroom helpers onto an lr-mcp API (longfin/lr-mcp#19, #20).
 See [CHANGELOG.md](CHANGELOG.md).
 
 ## License

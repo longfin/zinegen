@@ -1,7 +1,10 @@
-"""Lightroom helpers that lr-mcp does not provide yet (see lr-mcp issues #9, #10, #11).
+"""Lightroom helpers zinegen needs as structured data.
 
-Reuses lr-mcp's auth, HTTP and rendition code so this module can move upstream unchanged.
-Everything here is read-only against the Partner API.
+lr-mcp 0.4 covers album order, title/caption/keywords/cropped size, a download cache and album photo
+counts, but only as text for its MCP tools. Until it exposes them as functions (longfin/lr-mcp#19) and
+its downloader gains atomic writes, an incremental sidecar and id-based names (longfin/lr-mcp#20), this
+module does that work on top of `lr_mcp.client` (auth, HTTP, renditions), the only non-stdlib dependency it may
+import, so it can still move upstream unchanged. Everything here is read-only against the Partner API.
 """
 from __future__ import annotations
 
@@ -39,7 +42,8 @@ class Photo:
     original: tuple[int, int] | None   # importSource.originalWidth/Height
     cropped: tuple[int, int] | None    # develop.croppedWidth/Height
     orientation: int | None            # develop.userOrientation (EXIF value)
-    changed_at: str | None             # payload.changedAtTime (edit timestamp)
+    changed_at: str | None             # payload.changedAtTime, else userUpdated (moves on any change, ratings too)
+    edited_at: str | None = None       # develop.userUpdated, else userUpdated, else changedAtTime (see _edited)
     extra: dict = field(default_factory=dict)
 
     def to_dict(self):
@@ -92,6 +96,14 @@ def _index(k) -> int | None:
     return None
 
 
+def _edited(payload: dict) -> str | None:
+    """Edit timestamp for the rendition cache, as lr-mcp's `_edited`: `develop.userUpdated` moves only
+    when develop settings (crop included) change, so a rating or flag edit does not force a download;
+    fall back to the asset-wide `userUpdated`, then `changedAtTime`."""
+    return ((payload.get("develop") or {}).get("userUpdated") or payload.get("userUpdated")
+            or payload.get("changedAtTime"))
+
+
 def _photo(album_asset: dict) -> Photo:
     a = album_asset.get("asset", album_asset)
     p = a.get("payload", {})
@@ -116,6 +128,7 @@ def _photo(album_asset: dict) -> Photo:
         cropped=(dev["croppedWidth"], dev["croppedHeight"]) if dev.get("croppedWidth") else None,
         orientation=dev.get("userOrientation"),
         changed_at=p.get("changedAtTime") or p.get("userUpdated"),
+        edited_at=_edited(p),
         extra={"subtype": a.get("subtype")},
     )
 
@@ -162,7 +175,15 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
                      workers: int = 4, log=None) -> dict:
     """Download renditions into `dest/<asset_id>.jpg` with a sidecar `dest/index.json`.
 
-    Unchanged photos (same `changed_at` and size) are skipped. Returns the index.
+    A photo is skipped when its cached rendition has the same size and the same `edited_at`, so rating
+    and flag changes do not trigger a download; a photo with no edit time at all is always downloaded.
+    An index entry written by zinegen 0.2.0 has no `edited_at`; it still counts as current while its
+    `changed_at` matches, and is then upgraded in place. Returns the summary {downloaded, skipped, errors}.
+
+    Each photo gets one `lr.rendition` call: lr-mcp already retries a GET on dropped connections and
+    429/502/503/504. The one case retried here is a 2560/fullsize rendition that lr-mcp asked Lightroom to
+    generate and that was not ready by the end of its polling, or whose generate request (a POST, which
+    lr-mcp never retries) was refused with 429/5xx; see `_retry_rendition`.
     """
     if size not in ("640", "1280", "2048", "2560", "fullsize"):
         raise LrError("size must be one of 640, 1280, 2048, 2560, fullsize")
@@ -172,12 +193,21 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
     index = json.loads(index_file.read_text()) if index_file.exists() else {}
     jobs = []
     unique = list({p.id: p for p in photos}.values())  # one download (and one writer) per asset id
+    upgraded = False
     for p in unique:
         path = dest / f"{p.id}.jpg"
         entry = index.get(p.id)
-        if (not force and entry and path.exists() and entry.get("size") == size
-                and entry.get("changed_at") == p.changed_at):
-            continue
+        if not force and entry and path.exists() and entry.get("size") == size:
+            # an unknown edit time means download again, as lr-mcp's own cache does
+            if "edited_at" in entry:
+                current = p.edited_at is not None and entry["edited_at"] == p.edited_at
+            else:  # 0.2.0 entry: only changed_at was recorded
+                current = p.changed_at is not None and entry.get("changed_at") == p.changed_at
+                if current:
+                    index[p.id] = {**entry, "edited_at": p.edited_at}
+                    upgraded = True
+            if current:
+                continue
         jobs.append((p, path))
     errors = {}
     lock = threading.Lock()
@@ -188,31 +218,46 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
 
     def fetch(job):
         p, path = job
-        attempts = 3
-        for attempt in range(attempts):
+        for attempt in range(2):
             try:
                 data = lr.rendition(p.id, size)
             except LrError as e:
-                if attempt == attempts - 1:
-                    with lock:
-                        errors[p.id] = str(e)
-                else:
-                    time.sleep(2 * (attempt + 1))
-                continue
+                if attempt == 0 and _retry_rendition(size, e):
+                    time.sleep(2)
+                    continue
+                with lock:
+                    errors[p.id] = str(e)
+                return
             _atomic_write(path, data)  # never leave a truncated JPEG under the final name
             with lock:
-                index[p.id] = {"size": size, "changed_at": p.changed_at, "bytes": len(data),
+                index[p.id] = {"size": size, "changed_at": p.changed_at, "edited_at": p.edited_at, "bytes": len(data),
                                "file": p.file, "fetched_at": int(time.time())}
                 save_index()
             if log:
                 log(f"fetched {p.file or p.id} ({len(data) // 1024} KB)")
             return
 
+    if upgraded:
+        save_index()
     with ThreadPoolExecutor(workers) as ex:
         list(ex.map(fetch, jobs))
     with lock:
         save_index()
     return {"downloaded": len(jobs) - len(errors), "skipped": len(unique) - len(jobs), "errors": errors}
+
+
+# lr_mcp.client.rendition messages: "Rendition <kind> for <id> failed (<status>): ..." after polling, and
+# "Generating the <kind> rendition failed (<status>): ..." when the (unretried) generate POST is refused.
+_NOT_READY = re.compile(r"^Rendition \S+ for \S+ failed \(404\)|^Generating the \S+ rendition failed \((?:429|5\d\d)\)")
+
+
+def _retry_rendition(size: str, e: LrError) -> bool:
+    """True for the failures lr-mcp does not retry itself and a second call can fix: a generated size
+    (2560/fullsize) still not ready after lr-mcp's polling, or its generate request refused as busy.
+    Nothing else is retried here: dropped connections and 429/502/503/504 on a GET were already retried
+    by lr-mcp, and a 404 on a stored size (the photo is gone), a 403 or a 500 is retried by nobody, on
+    purpose, since another attempt would fail the same way."""
+    return size in ("2560", "fullsize") and bool(_NOT_READY.match(str(e)))
 
 
 def _atomic_write(path: Path, data: bytes) -> None:

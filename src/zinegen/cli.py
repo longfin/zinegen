@@ -55,17 +55,88 @@ def cmd_presets(_):
         print(f"{k:10} pages ×{b['page_multiple']}, gutter +{b['gutter_extra_mm']}mm, crossing {'ok' if b['crossing_ok'] else 'avoid'}: {b['note']}")
 
 
-def cmd_albums(a):
+COUNT_SECONDS = 60   # time spent counting photos per listing; MCP clients time out at about 120 s
+COUNT_WORKERS = 6
+# lr-mcp gives up early, raising, when its next retry would start after the deadline; that wait is at most
+# 13.5 s (backoff) or 10 s (Retry-After). An error this close to the deadline is a count that ran out of time.
+COUNT_RETRY_MARGIN = 15
+# lr_mcp.client messages of the failures it retries: transport errors and 429/502/503/504 responses
+_RETRYABLE = re.compile(r" failed after \d+ attempts?: | returned (?:429|502|503|504)\b")
+
+
+def list_albums(query: str | None = None) -> list[dict]:
+    """Albums (not folders) whose name contains `query` (case-insensitive), in catalog order."""
     from lr_mcp import client as lr
-    q = (a.query or "").lower()
-    cat = lr.catalog_path()
-    for alb in lr.paginate(cat + "albums?limit=500"):
+    q = (query or "").lower()
+    out = []
+    for alb in lr.paginate(lr.catalog_path() + "albums?limit=500"):
         if alb.get("subtype") != "collection":
             continue
-        name = alb.get("payload", {}).get("name", "")
-        if q and q not in name.lower():
+        if q and q not in alb.get("payload", {}).get("name", "").lower():
             continue
-        print(f"{alb['id']}  {name}  [{alb['payload'].get('assetSortOrder')}]")
+        out.append(alb)
+    return out
+
+
+def album_counts(albums: list[dict], seconds: float = COUNT_SECONDS,
+                 hint: str = "narrow the listing with a query") -> tuple[dict[str, int], str]:
+    """({album_id: photo count}, note) for `albums`, counted in parallel within `seconds`.
+
+    Counts come from `lr_mcp.client.album_asset_count` (videos included; one request per 500 photos) and
+    are cached in the process for up to 10 minutes while the album's `updated` is unchanged. An album not
+    counted in time, or whose count failed, is left out of the dict and the note says how many and why
+    (`hint` follows the time-limit part); the note is empty when every album was counted. A failed count
+    never fails the listing.
+    """
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from lr_mcp import client as lr
+    if not albums:
+        return {}, ""
+    lr.catalog_path()     # resolve the catalog once here, not in every worker at the same time
+    deadline = time.monotonic() + seconds
+
+    def count(alb):
+        try:
+            return lr.album_asset_count(alb["id"], alb.get("updated"), deadline)
+        except Exception as e:  # noqa: BLE001 - one bad album or response must not lose the listing
+            # cut short by the deadline, or a retryable failure lr-mcp abandoned because the next retry would
+            # pass it: late, not broken. A 403 or 500 is never retried, so it stays an error even then.
+            now = time.monotonic()
+            if now > deadline or (now + COUNT_RETRY_MARGIN > deadline and _RETRYABLE.search(str(e))):
+                return None
+            return e
+
+    with ThreadPoolExecutor(COUNT_WORKERS) as ex:
+        results = list(ex.map(count, albums))
+    counts = {alb["id"]: r for alb, r in zip(albums, results, strict=True) if isinstance(r, int)}
+    late = sum(r is None for r in results)
+    errors = [r for r in results if isinstance(r, Exception)]
+    notes = []
+    if late:
+        notes.append(f"{late} of {len(albums)} albums not counted, time limit of {seconds:g} s reached: {hint}")
+    if errors:
+        e = errors[0]
+        notes.append(f"{len(errors)} could not be counted: {e if isinstance(e, lr.LrError) else repr(e)}")
+    return counts, "; ".join(notes)
+
+
+def photo_count(counts: dict[str, int], album_id: str) -> str:
+    """'<n> photos' from `album_counts`, '? photos' for an album it did not count."""
+    n = counts.get(album_id, "?")
+    return f"{n} photo{'' if n == 1 else 's'}"
+
+
+def cmd_albums(a):
+    albums = list_albums(a.query)
+    hint = "use a narrower query" if a.query else "narrow the listing with a query"
+    counts, note = album_counts(albums, hint=hint) if a.counts else ({}, "")
+    for alb in albums:
+        line = f"{alb['id']}  {alb.get('payload', {}).get('name', '')}  [{alb['payload'].get('assetSortOrder')}]"
+        print(line + (f"  {photo_count(counts, alb['id'])}" if a.counts else ""))
+    if note:
+        log(note)
 
 
 def _book(path) -> spec.Book:
@@ -258,6 +329,9 @@ def main(argv=None):
     sub.add_parser("presets").set_defaults(f=cmd_presets)
     p = sub.add_parser("albums", help="list Lightroom albums")
     p.add_argument("query", nargs="?")
+    p.add_argument("--counts", action="store_true",
+                   help=f"add each album's photo count: one request per album, at most {COUNT_SECONDS} s in all, "
+                        "'?' for albums not counted")
     p.set_defaults(f=cmd_albums)
     p = sub.add_parser("init", help="draft book.yaml from a Lightroom album")
     p.add_argument("--album", required=True)

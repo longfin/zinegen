@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `zinegen albums --counts` and `zg_list_albums` `include_counts`: each album's photo count (videos included),
+  off by default. Only albums that match the query are counted, one request per album, within 60 s in all;
+  albums not counted in time, or whose count failed, show `?` and a closing line says how many and why. The
+  MCP server keeps finished counts for up to 10 minutes, so calling it again continues. Output without counts
+  is unchanged.
+- `photos.json` photos have `edited_at`, the last develop edit (`develop.userUpdated`, else `userUpdated`, else
+  `changedAtTime`). `changed_at` keeps its meaning.
+
+### Changed
+
+- Requires lr-mcp 0.4 (for `album_asset_count`). Its client retries GETs (6 attempts with backoff) on dropped
+  connections and 429/502/503/504 responses.
+- `fetch` no longer retries a rendition three times itself, which on top of lr-mcp's retries made one photo
+  wait minutes during an outage. It retries once only what lr-mcp does not: a 2560/fullsize rendition still
+  being generated after lr-mcp's 60 s of polling, or a generate request refused with 429/5xx. Worst case per
+  photo (4 photos at a time): a persistent 503 about 25–50 s, a stalled connection about 3.5 min (6 × 30 s
+  timeouts plus backoff), a full-size rendition that never becomes ready about 2 min.
+- `fetch` decides whether a cached rendition is current by `edited_at` instead of `changed_at`, so changing a
+  rating or flag in Lightroom no longer downloads the photo again. Caches from 0.2.0 stay valid: an entry
+  without `edited_at` is current while its `changed_at` matches and then records `edited_at`. A photo whose
+  rating, flag or edit changed between the 0.2.0 fetch and the first fetch after upgrading is downloaded once.
+  A photo for which Lightroom reports no edit time at all is downloaded on every fetch, as lr-mcp does.
+
 ## 0.2.0 — 2026-11-14
 
 **Rebuild PDFs made with 0.1.0.** WeasyPrint re-encoded every embedded JPEG in 0.1.0 (a second lossy

@@ -55,7 +55,7 @@ inserted before it (`SPREAD_MOVED`); the total is padded with blanks to the bind
 
 ## 2. `photos.json` — album metadata (version 1)
 
-Written by `zinegen init`; read by agents when sequencing. Mirrors the fields proposed for lr-mcp (issue #10).
+Written by `zinegen init`; read by agents when sequencing.
 
 ```json
 {"version": 1,
@@ -64,8 +64,14 @@ Written by `zinegen init`; read by agents when sequencing. Mirrors the fields pr
              "order": "V--3 | null", "title": null, "caption": null, "keywords": [],
              "rating": null, "flag": "pick | reject | null", "camera": "…", "lens": "…",
              "original": [6192, 4128], "cropped": [6192, 4128], "orientation": 1,
-             "changed_at": "2026-11-07T09:43:59.021Z"}]}
+             "changed_at": "2026-11-07T09:43:59.021Z", "edited_at": "2026-11-07T09:40:12.345Z"}]}
 ```
+
+`changed_at` is Lightroom's `changedAtTime` (else `userUpdated`): it moves on any change to the photo,
+a rating or flag included. `edited_at` (added after 0.2.0) is the time of the last develop edit, crop included:
+`develop.userUpdated`, else `userUpdated`, else `changedAtTime`, as lr-mcp's download cache uses. `zinegen fetch`
+skips a photo whose cached rendition has the same size and `edited_at` (a photo with no edit time at all is
+always downloaded); a size change, a missing file or `--force` downloads it again. Older files lack `edited_at`; readers treat it as absent.
 
 `photos` is in the album's own order. `cropped` is the post-crop size reported by Lightroom; the embedded
 rendition's pixel size is authoritative for layout. `keywords` is a list of keyword strings; 0.1.0 wrote
@@ -130,7 +136,9 @@ they differ only on x-1a when `max_dpi` downsampled the photo. Layout geometry a
 
 ## Not frozen (yet)
 
-- `cache/index.json` (rendition cache sidecar): internal until it is shared with lr-mcp (issue #11).
+- `cache/index.json` (rendition cache sidecar, `{asset id: {size, changed_at, edited_at, bytes, file, fetched_at}}`):
+  internal. A rendition is current when `size` and `edited_at` match; an entry from 0.2.0 has no `edited_at`
+  and stays current while `changed_at` matches, and then gets `edited_at` added.
 - `cache/cmyk/*.json`: conversion sidecar keyed by content hash.
 - `cache/upright/`: upright copies of EXIF-rotated photos for x-4.
 - `cache/missing.json`: ids the last fetch did not find in Lightroom, so render can name them.

@@ -13,7 +13,7 @@ typesetting workflow and taste rules.
 
 ```
 src/zinegen/
-  lr/compat.py   Lightroom helpers missing from lr-mcp (album order, captions, cached renditions)
+  lr/compat.py   Lightroom album/photo data and rendition cache as Python values (lr-mcp has them as tool text)
   presets.py     trim presets, binding rules, spine width
   spec.py        book.yaml loading, JSON Schema validation, skeleton drafting
   schema/        book.schema.json (book.yaml format, version 1)
@@ -80,7 +80,9 @@ lib dir automatically. Ghostscript (`gs`) is required for proofs.
 - **ICC profiles and Apple/Adobe fonts are not redistributable.** Only `sRGB2014.icc` (from WeasyPrint) is bundled.
   Resolve press profiles at run time (`color.find_profile`) and prefer OFL fonts (Nanum, Noto, Pretendard) as defaults.
 - Functions that lr-mcp may adopt later live in `lr/compat.py` and must stay importable with only `lr_mcp.client`
-  as a dependency, so they can be upstreamed unchanged (lr-mcp issues #9, #10, #11).
+  as a dependency, so they can be upstreamed unchanged. lr-mcp 0.4 has album order, captions/keywords/cropped
+  size, a download cache and album counts, but only inside its MCP tools; what remains is a structured API
+  (longfin/lr-mcp#19) and a downloader zinegen could use (longfin/lr-mcp#20).
 - Tests must not touch the network. `tests/test_render.py` renders synthetic JPEGs through the real pipeline on
   both standards: PDF/X-1a uses any CMYK profile found (`tests/conftest.py`: `ZINEGEN_TEST_CMYK_ICC`, an
   installed press profile, or Ghostscript's `default_cmyk.icc`) and is skipped without one, except on CI, where
@@ -106,6 +108,7 @@ finish with `zg_check` green and report warnings (low dpi, gutter crossing, padd
 
 - Cover PDF (spine from `zinegen spine`, wrap-around layout, separate PDF/X).
 - Local review GUI: spread viewer with comments the agent can read; no editing.
-- Upstream `lr/compat.py` to lr-mcp.
+- Replace `lr/compat.py` with lr-mcp functions once lr-mcp exposes a structured API (longfin/lr-mcp#19) and a
+  downloader with atomic writes, an incremental sidecar and id-based names (longfin/lr-mcp#20); see #23.
 - Real preflight comparison (Acrobat Pro / callas) and fixes for anything it flags. `check.py` is a structural
   self-check (boxes, output intent, colour spaces, transparency, fonts); it does not replace a real preflight.

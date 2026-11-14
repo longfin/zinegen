@@ -7,13 +7,24 @@ with ghostscript, which CI already needs for proofs). Without one they are skipp
 """
 from __future__ import annotations
 
+import atexit
 import glob
 import os
-from pathlib import Path
+import shutil
+import tempfile
 
-import pytest
+# lr_mcp.client reads its state directory (.env with the Adobe credential, tokens) when it is first
+# imported. Point it at an empty directory before any test can import it, so the suite never loads the
+# developer's real sign-in.
+LR_MCP_TEST_HOME = tempfile.mkdtemp(prefix="zinegen-test-lr-mcp-")
+os.environ["LR_MCP_HOME"] = LR_MCP_TEST_HOME
+atexit.register(shutil.rmtree, LR_MCP_TEST_HOME, ignore_errors=True)
 
-from zinegen import color
+from pathlib import Path  # noqa: E402
+
+import pytest  # noqa: E402
+
+from zinegen import color  # noqa: E402
 
 GS_CMYK_GLOBS = [
     "/usr/share/color/icc/ghostscript/default_cmyk.icc",            # Debian/Ubuntu (libgs-common)
