@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Requires lr-mcp 0.5. Album order and photo metadata now come from its `lr_mcp.catalog` instead of zinegen's
+  own copy of that logic (#23). What changes for a book:
+  - **Custom-order albums:** a photo without an order key now comes after the ordered photos, by capture date,
+    as in lr-mcp's `lr_list_photos`. It used to come first. This moves photos in `zinegen init` drafts,
+    `photos.json` and `zg_album_photos` for albums that have such photos; an existing `book.yaml` is not touched.
+  - `title` and `caption` are stripped at both ends, an empty one is null, and a language alternative resolves
+    to its default text. A rating outside 0–5 is null.
+  - A `{index: value}` keyword bag, which the API was never seen to send, is no longer decoded.
+- `fetch` decides its one extra try per photo from lr-mcp's `retryable` flag instead of matching its error
+  messages. The cases are the same, plus a dropped connection on the generate request.
+
 ## 0.3.0 — 2026-11-15
 
 ### Added

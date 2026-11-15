@@ -73,7 +73,9 @@ a rating or flag included. `edited_at` (added after 0.2.0) is the time of the la
 skips a photo whose cached rendition has the same size and `edited_at` (a photo with no edit time at all is
 always downloaded); a size change, a missing file or `--force` downloads it again. Older files lack `edited_at`; readers treat it as absent.
 
-`photos` is in the album's own order. `cropped` is the post-crop size reported by Lightroom; the embedded
+`photos` is in the album's own order, as `lr_mcp.catalog.album_assets` sorts it: in a custom-order album a photo
+without an order key (`order: null`) comes after the ordered ones (up to 0.3.0 it came first).
+`title` and `caption` are stripped at both ends and null when empty. `cropped` is the post-crop size reported by Lightroom; the embedded
 rendition's pixel size is authoritative for layout. `keywords` is a list of keyword strings; 0.1.0 wrote
 `[true, …]` instead (the API sends `dc.subject` as `{keyword: true}`). This is a bug fix, not a format change.
 To refresh a 0.1.0 `photos.json` without touching `book.yaml`, run `zinegen init --album <album id> --dir <scratch dir>`

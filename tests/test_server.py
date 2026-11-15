@@ -35,7 +35,7 @@ def text(res) -> str:
 def photo(pid: str, w=3000, h=2000) -> compat.Photo:
     return compat.Photo(id=pid, file=f"{pid[:4]}.jpg", captured="2024-10-01T10:00:00", order=None, title=None,
                         caption=None, keywords=[], rating=None, flag=None, camera=None, lens=None,
-                        original=(w, h), cropped=None, orientation=None, changed_at="t", extra={"subtype": "image"})
+                        original=(w, h), cropped=None, orientation=None, changed_at="t")
 
 
 def write_book(d: Path, pages=None, **extra) -> Path:

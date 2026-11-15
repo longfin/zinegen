@@ -9,33 +9,49 @@ from zinegen.lr import compat
 
 def _asset(subject):
     dc = {} if subject is None else {"subject": subject}
-    return {"asset": {"id": "a" * 32, "subtype": "image", "payload": {"xmp": {"dc": dc}}},
-            "payload": {"order": "V--1"}}
+    return {"id": "a" * 32, "subtype": "image", "payload": {"xmp": {"dc": dc}}}
 
 
 @pytest.mark.parametrize("subject, expected", [
     ({"sea": True, "winter": True}, ["sea", "winter"]),        # shape the Partner API actually sends
     ({"sea": True, "dropped": False}, ["sea"]),
-    ({"1": "winter", "0": "sea"}, ["sea", "winter"]),           # {index: value} bag
-    ({0: "sea", 1: "winter"}, ["sea", "winter"]),
     (["sea", "winter"], ["sea", "winter"]),
     ("sea", ["sea"]),
     ({}, []),
     (None, []),
-    # shapes never observed: must not crash and must not drop a truthy string key
-    ({"²": "a"}, ["²"]),                                          # isdigit() but not int()-able
-    ({"sea": True, "0": "x"}, ["x", "sea"]),                      # mixed bag
     ({"sea": 1}, ["sea"]),                                        # truthy non-bool value
     ({"2026": True}, ["2026"]),                                   # numeric keyword in a set bag
-    ({"sea": True, "1": "sea"}, ["sea"]),                         # duplicates removed
 ])
-def test_keywords_shapes(subject, expected):
-    assert compat._photo(_asset(subject)).keywords == expected
+def test_keywords_are_strings(subject, expected):
+    """Keywords are lr_mcp.catalog's; 0.1.0 wrote the bag's `true` values into photos.json instead."""
+    kws = compat._photo(_asset(subject)).keywords
+    assert kws == expected and all(isinstance(k, str) for k in kws)
 
 
-def test_keywords_never_contain_bools():
-    kws = compat._photo(_asset({"a": True, "b": True})).keywords
-    assert all(isinstance(k, str) for k in kws)
+def test_photo_fields_from_asset_summary():
+    asset = {"id": "a" * 32, "subtype": "image", "payload": {
+        "captureDate": "2026-11-07T14:08:16", "changedAtTime": "c", "userUpdated": "u",
+        "importSource": {"fileName": "R0010712.DNG", "originalWidth": 6192, "originalHeight": 4128},
+        "develop": {"croppedWidth": 4000, "croppedHeight": 3000, "userOrientation": 6, "userUpdated": "d"},
+        "ratings": {"x": {"rating": 4, "date": "2026-11-08"}}, "reviews": {"x": {"flag": "pick", "date": "2026-11-08"}},
+        "xmp": {"dc": {"title": {"x-default": " Maple "}, "description": "first line\nsecond"},
+                "tiff": {"Make": "RICOH", "Model": "GR IV"}, "aux": {"Lens": "18.3mm F2.8"}}}}
+    p = compat._photo(asset, "V--3")
+    assert p.to_dict() == {
+        "id": "a" * 32, "file": "R0010712.DNG", "captured": "2026-11-07T14:08:16", "order": "V--3",
+        "title": "Maple", "caption": "first line\nsecond", "keywords": [], "rating": 4, "flag": "pick",
+        "camera": "RICOH GR IV", "lens": "18.3mm F2.8", "original": (6192, 4128), "cropped": (4000, 3000),
+        "orientation": 6, "changed_at": "c", "edited_at": "d"}
+    # the keys photos.json (version 1) has always had, in the same order
+    assert list(p.to_dict()) == ["id", "file", "captured", "order", "title", "caption", "keywords", "rating", "flag",
+                                 "camera", "lens", "original", "cropped", "orientation", "changed_at", "edited_at"]
+    assert compat._photo({"id": "b" * 32}).order is None      # looked up by id, outside any album
+
+
+def _error(message, status=None, retryable=False):
+    e = compat.LrError(message)
+    e.status, e.retryable = status, retryable
+    return e
 
 
 class _Photo:
@@ -49,9 +65,9 @@ def test_fetch_renditions_retry_clears_error_and_writes_index(tmp_path, monkeypa
     def rendition(asset_id, size):
         calls[asset_id] = calls.get(asset_id, 0) + 1
         if asset_id.endswith("1") and calls[asset_id] == 1:   # generated, not ready by the end of polling
-            raise compat.LrError(f"Rendition {size} for {asset_id} failed (404): None")
+            raise _error(f"Rendition {size} for {asset_id} failed (404): None", 404, retryable=True)
         if asset_id.endswith("2"):
-            raise compat.LrError(f"Rendition {size} for {asset_id} failed (500): boom")
+            raise _error(f"Rendition {size} for {asset_id} failed (500): boom", 500)
         return b"jpeg"
 
     monkeypatch.setattr(compat.lr, "rendition", rendition)
@@ -66,27 +82,18 @@ def test_fetch_renditions_retry_clears_error_and_writes_index(tmp_path, monkeypa
     assert set(index) == {photos[0].id, photos[1].id}
 
 
-@pytest.mark.parametrize("size, message, attempts", [
-    # lr-mcp already retried these GETs (dropped connections, 429/502/503/504) or they cannot succeed
-    ("fullsize", "Rendition fullsize for {id} failed (503): busy", 1),
-    ("fullsize", "Rendition fullsize for {id} failed (500): boom", 1),
-    ("fullsize", "GET https://lr.adobe.io/v2/x failed after 6 attempts: TimeoutError()", 1),
-    ("640", "Rendition 640 for {id} failed (404): None", 1),               # a stored size: the photo is gone
-    # what lr-mcp does not retry: generation not finished after its polling, or the generate POST refused
-    ("fullsize", "Rendition fullsize for {id} failed (404): None", 2),
-    ("2560", "Generating the 2560 rendition failed (503): busy", 2),
-    ("2560", "Generating the 2560 rendition failed (403): denied", 1),
-])
-def test_fetch_renditions_attempts_per_photo(tmp_path, monkeypatch, size, message, attempts):
+@pytest.mark.parametrize("retryable, attempts", [(False, 1), (True, 2)])
+def test_fetch_renditions_attempts_follow_retryable(tmp_path, monkeypatch, retryable, attempts):
+    """One more call only for what lr-mcp marks retryable; it has retried everything else itself."""
     calls = []
 
     def rendition(asset_id, size):
         calls.append(asset_id)
-        raise compat.LrError(message.format(id=asset_id))
+        raise _error(f"Rendition {size} for {asset_id} failed (404): None", 404, retryable)
 
     monkeypatch.setattr(compat.lr, "rendition", rendition)
     monkeypatch.setattr(compat.time, "sleep", lambda s: None)
-    res = compat.fetch_renditions([_Photo(0)], tmp_path, size=size, workers=1)
+    res = compat.fetch_renditions([_Photo(0)], tmp_path, size="fullsize", workers=1)
     assert len(calls) == attempts and set(res["errors"]) == {_Photo(0).id}
 
 
@@ -167,14 +174,16 @@ def test_fetch_renditions_concurrent_writers_of_one_photo(tmp_path, monkeypatch)
     assert not list(tmp_path.glob(".*.part"))
 
 
-@pytest.mark.parametrize("get_status, post_status, retry", [
-    (404, 202, True),    # generation requested, still 404 on every poll
-    (404, 503, True),    # the generate POST (never retried by lr-mcp) refused as busy
-    (404, 403, False),   # generate refused for good
-    (403, None, False),  # the GET itself is forbidden
+@pytest.mark.parametrize("size, get_status, post_status, retry", [
+    ("fullsize", 404, 202, True),    # generation requested, still 404 on every poll
+    ("2560", 404, 503, True),        # the generate POST (sent once by lr-mcp) refused as busy
+    ("fullsize", 404, 403, False),   # generate refused for good
+    ("fullsize", 403, None, False),  # the GET itself is forbidden
+    ("fullsize", 503, None, False),  # lr-mcp's request() retries these GETs itself (stubbed out here)
+    ("640", 404, None, False),       # a stored size: the photo is gone
 ])
-def test_retry_rendition_matches_lr_mcp_messages(monkeypatch, get_status, post_status, retry):
-    """Contract with the real lr_mcp.client.rendition: a change in its wording must fail here."""
+def test_lr_mcp_marks_what_fetch_retries(monkeypatch, size, get_status, post_status, retry):
+    """Contract with the real lr_mcp.client.rendition: `retryable` is what fetch_renditions goes by."""
     from lr_mcp import client as lr
     calls = []
 
@@ -188,10 +197,9 @@ def test_retry_rendition_matches_lr_mcp_messages(monkeypatch, get_status, post_s
     monkeypatch.setattr(lr, "request", request)
     monkeypatch.setattr(lr.time, "sleep", lambda s: None)
     with pytest.raises(compat.LrError) as exc:
-        lr.rendition("a" * 32, "fullsize")
-    assert compat._retry_rendition("fullsize", exc.value) is retry
-    assert not compat._retry_rendition("640", exc.value)    # only generated sizes are retried
-    if get_status == 404 and post_status == 202:
+        lr.rendition("a" * 32, size)
+    assert exc.value.retryable is retry
+    if post_status == 202:
         assert calls.count("POST") == 1 and calls.count("GET") > 1   # it really polled
 
 
@@ -291,13 +299,69 @@ def test_old_index_entry_with_another_change_downloads(tmp_path, renditions):
     assert res["downloaded"] == 1 and (tmp_path / f"{'a' * 32}.jpg").read_bytes() == b"jpeg"
 
 
+@pytest.fixture
+def album(monkeypatch):
+    """A fake Lightroom album: set `album["sort"]` and `album["rows"]` (album-asset resources)."""
+    from lr_mcp import catalog
+    from lr_mcp import client as lr
+    state = {"sort": "customAsc", "rows": [], "id": "d" * 32}
+    catalog._album_cache.clear()      # lr-mcp keeps an album for a minute
+    monkeypatch.setattr(lr, "catalog_path", lambda: "/v2/catalogs/c0ffee/")
+    monkeypatch.setattr(lr, "get_json", lambda path, **k: {
+        "id": state["id"], "subtype": "collection", "payload": {"name": "Autumn", "assetSortOrder": state["sort"]}})
+    monkeypatch.setattr(lr, "paginate", lambda path: iter(state["rows"]))
+    yield state
+    catalog._album_cache.clear()
+
+
+def _row(n, captured, order=None, subtype="image"):
+    row = {"asset": {"id": f"{n:032x}", "subtype": subtype, "payload": {"captureDate": captured}}}
+    if order is not None:
+        row["payload"] = {"order": order}
+    return row
+
+
+@pytest.mark.parametrize("sort, expected", [
+    ("customAsc", [3, 2, 1, 4]),          # by order key; the photo without one goes last
+    ("captureDateAsc", [1, 2, 3, 4]),
+    ("captureDateDesc", [4, 3, 2, 1]),
+    (None, [1, 2, 3, 4]),                 # an album that has no sort mode
+])
+def test_album_assets_in_album_order(album, sort, expected):
+    album["sort"] = sort
+    album["rows"] = [_row(2, "2026-01-02", "V--2"), _row(4, "2026-01-04"), _row(1, "2026-01-01", "V--3"),
+                     _row(3, "2026-01-03", "V--1"), _row(9, "2026-01-09", "V--0", subtype="video")]
+    photos = compat.album_assets(album["id"])
+    assert [int(p.id, 16) for p in photos] == expected
+    assert {int(p.id, 16): p.order for p in photos} == {1: "V--3", 2: "V--2", 3: "V--1", 4: None}
+    assert compat.album_info(album["id"]) == {"id": album["id"], "name": "Autumn", "parent": None,
+                                              "subtype": "collection", "sort": sort or "captureDateAsc"}
+    assert len(compat.album_assets(album["id"], images_only=False)) == 5
+
+
+def test_album_deleted_while_listing(album, monkeypatch):
+    """The album answers, then its asset list is gone: the same sentence as an unknown id."""
+    from lr_mcp import client as lr
+
+    def gone(path):
+        raise _error("GET /v2/catalogs/c0ffee/albums/x/assets returned 404: {'code': 1000}", 404)
+        yield
+
+    monkeypatch.setattr(lr, "paginate", gone)
+    with pytest.raises(compat.LrError, match="not found in the Lightroom catalog") as exc:
+        compat.album_assets(album["id"])
+    assert exc.value.status == 404 and "lr_list_albums" not in str(exc.value)
+
+
 @pytest.mark.parametrize("status, expected", [
     (404, "album " + "d" * 32 + " not found in the Lightroom catalog"),
     (500, "returned 500"),                    # anything else keeps lr-mcp's message
 ])
 def test_album_info_not_found(monkeypatch, status, expected):
     """A well-formed id of no album: a sentence, not lr-mcp's raw response body (a dict repr)."""
+    from lr_mcp import catalog
     from lr_mcp import client as lr
+    catalog._album_cache.clear()
     monkeypatch.setattr(lr, "catalog_path", lambda: "/v2/catalogs/c0ffee/")
     monkeypatch.setattr(lr, "request", lambda method, path, **k: (
         status, b'while (1) {}\n{"code":1000,"description":"Resource not found"}'))
@@ -305,3 +369,4 @@ def test_album_info_not_found(monkeypatch, status, expected):
         compat.album_info("d" * 32)
     assert expected in str(exc.value)
     assert ("{'code'" in str(exc.value)) == (status != 404)
+    assert exc.value.status == status and "lr_list_albums" not in str(exc.value)
