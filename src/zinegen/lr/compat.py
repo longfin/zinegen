@@ -1,23 +1,23 @@
-"""Lightroom helpers zinegen needs as structured data.
+"""Lightroom data in the shapes zinegen uses.
 
-lr-mcp 0.4 covers album order, title/caption/keywords/cropped size, a download cache and album photo
-counts, but only as text for its MCP tools. Until it exposes them as functions (longfin/lr-mcp#19) and
-its downloader gains atomic writes, an incremental sidecar and id-based names (longfin/lr-mcp#20), this
-module does that work on top of `lr_mcp.client` (auth, HTTP, renditions), the only non-stdlib dependency it may
-import, so it can still move upstream unchanged. Everything here is read-only against the Partner API.
+Album order and photo metadata come from `lr_mcp.catalog` (lr-mcp 0.5); this module turns them into
+`Photo` values and the `photos.json` document, and words a missing album for zinegen's tools. The
+rendition cache stays here: lr-mcp's downloader is an MCP tool that answers in text and keeps its own
+sidecar, while `fetch` needs a per-photo result and `cache/index.json`. Everything is read-only against
+the Partner API and goes through `lr_mcp.client`.
 """
 from __future__ import annotations
 
 import json
 import os
-import re
 import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from lr_mcp import catalog
 from lr_mcp import client as lr
 from lr_mcp.client import LrError
 
@@ -43,93 +43,24 @@ class Photo:
     cropped: tuple[int, int] | None    # develop.croppedWidth/Height
     orientation: int | None            # develop.userOrientation (EXIF value)
     changed_at: str | None             # payload.changedAtTime, else userUpdated (moves on any change, ratings too)
-    edited_at: str | None = None       # develop.userUpdated, else userUpdated, else changedAtTime (see _edited)
-    extra: dict = field(default_factory=dict)
+    edited_at: str | None = None       # lr_mcp.catalog.asset_edited: the last develop edit
 
     def to_dict(self):
-        d = asdict(self)
-        d.pop("extra", None)
-        return d
+        return asdict(self)
 
 
-def _latest(d, key):
-    if not d:
-        return None
-    v = max(d.values(), key=lambda x: x.get("date", ""))
-    return v.get(key)
-
-
-def _keywords(subject) -> list[str]:
-    """Keyword strings from `xmp.dc.subject`.
-
-    The Partner API sends the bag as a set, `{"keyword": true, ...}` (checked against a real catalog).
-    An `{index: value}` dict or a plain list is also accepted, in case another endpoint serialises the
-    bag that way. Per dict entry: an integer key (or a decimal-digit string) with a string value is an
-    index entry and yields the value; any other string key with a truthy value yields the key. Index
-    entries come first, in index order. Non-string results are dropped, duplicates removed; never raises.
-    """
-    if isinstance(subject, str):
-        return [subject]
-    if isinstance(subject, list):
-        return list(dict.fromkeys(k for k in subject if isinstance(k, str)))
-    if not isinstance(subject, dict):
-        return []
-    indexed, named = [], []
-    for k, v in subject.items():
-        i = _index(k)
-        if i is not None and isinstance(v, str):
-            indexed.append((i, v))
-        elif isinstance(k, str) and v:
-            named.append(k)
-    indexed.sort(key=lambda iv: iv[0])
-    return list(dict.fromkeys([v for _, v in indexed] + named))
-
-
-def _index(k) -> int | None:
-    if isinstance(k, int) and not isinstance(k, bool):
-        return k
-    if isinstance(k, str) and k.isdecimal():
-        try:
-            return int(k)
-        except ValueError:
-            return None
-    return None
-
-
-def _edited(payload: dict) -> str | None:
-    """Edit timestamp for the rendition cache, as lr-mcp's `_edited`: `develop.userUpdated` moves only
-    when develop settings (crop included) change, so a rating or flag edit does not force a download;
-    fall back to the asset-wide `userUpdated`, then `changedAtTime`."""
-    return ((payload.get("develop") or {}).get("userUpdated") or payload.get("userUpdated")
-            or payload.get("changedAtTime"))
-
-
-def _photo(album_asset: dict) -> Photo:
-    a = album_asset.get("asset", album_asset)
-    p = a.get("payload", {})
-    xmp = p.get("xmp", {})
-    dc = xmp.get("dc", {})
-    tiff = xmp.get("tiff", {})
-    imp = p.get("importSource", {})
-    dev = p.get("develop", {})
+def _photo(asset: dict, order: str | None = None) -> Photo:
+    """An asset resource as a Photo. Every field but `changed_at` is `lr_mcp.catalog.asset_summary`'s;
+    `changed_at` is not part of it and photos.json keeps the field, so it is read from the payload here."""
+    s = catalog.asset_summary(asset)
+    p = asset.get("payload")
+    p = p if isinstance(p, dict) else {}
+    changed = next((v for v in (p.get("changedAtTime"), p.get("userUpdated")) if isinstance(v, str) and v), None)
     return Photo(
-        id=a["id"],
-        file=imp.get("fileName"),
-        captured=p.get("captureDate"),
-        order=album_asset.get("payload", {}).get("order") if "asset" in album_asset else None,
-        title=dc.get("title") if isinstance(dc.get("title"), str) else None,
-        caption=dc.get("description") if isinstance(dc.get("description"), str) else None,
-        keywords=_keywords(dc.get("subject")),
-        rating=_latest(p.get("ratings"), "rating"),
-        flag=_latest(p.get("reviews"), "flag"),
-        camera=" ".join(filter(None, [tiff.get("Make"), tiff.get("Model")])) or None,
-        lens=xmp.get("aux", {}).get("Lens"),
-        original=(imp["originalWidth"], imp["originalHeight"]) if imp.get("originalWidth") else None,
-        cropped=(dev["croppedWidth"], dev["croppedHeight"]) if dev.get("croppedWidth") else None,
-        orientation=dev.get("userOrientation"),
-        changed_at=p.get("changedAtTime") or p.get("userUpdated"),
-        edited_at=_edited(p),
-        extra={"subtype": a.get("subtype")},
+        id=s["id"], file=s["file"], captured=s["captured"], order=order, title=s["title"], caption=s["caption"],
+        keywords=s["keywords"], rating=s["rating"], flag=s["flag"], camera=s["camera"], lens=s["lens"],
+        original=s["original"], cropped=s["cropped"], orientation=s["orientation"],
+        changed_at=changed, edited_at=s["edited"],
     )
 
 
@@ -139,36 +70,36 @@ def photos_document(album: dict, photos: list[Photo]) -> dict:
             "photos": [p.to_dict() for p in photos]}
 
 
+def _not_found(album_id: str) -> LrError:
+    """lr-mcp's 404 message points at its own `lr_list_albums` tool; say it in zinegen's terms."""
+    e = LrError(f"album {album_id} not found in the Lightroom catalog: the id may be mistyped, from "
+                "another account, or the album was deleted; list the albums to find its id")
+    e.status = 404
+    return e
+
+
 def album_info(album_id: str) -> dict:
-    """Album name, parent and sort mode (`assetSortOrder`: captureDateAsc | captureDateDesc | customAsc)."""
+    """`lr_mcp.catalog.album_info`: {"id", "name", "parent", "subtype", "sort"}, where `sort` is the
+    album's `assetSortOrder` (captureDateAsc | captureDateDesc | customAsc). lr-mcp fetches an album
+    at most once a minute."""
     try:
-        a = lr.get_json(lr.catalog_path() + f"albums/{album_id}")
-    except lr.LrError as e:
-        # get_json's message ends with the raw response body (a dict repr); a 404 only means "no such album"
-        if re.search(r" returned 404\b", str(e)):
-            raise lr.LrError(f"album {album_id} not found in the Lightroom catalog: the id may be mistyped, from "
-                             "another account, or the album was deleted; list the albums to find its id") from None
+        return catalog.album_info(album_id)
+    except LrError as e:
+        if e.status == 404:
+            raise _not_found(album_id) from None
         raise
-    p = a.get("payload", {})
-    return {"id": a["id"], "name": p.get("name"), "sort": p.get("assetSortOrder") or "captureDateAsc",
-            "parent": (p.get("parent") or {}).get("id")}
 
 
 def album_assets(album_id: str, images_only: bool = True) -> list[Photo]:
-    """Photos of an album in the album's own order (custom order when the album uses one)."""
-    info = album_info(album_id)
-    rows = list(lr.paginate(lr.catalog_path() + f"albums/{album_id}/assets?embed=asset&limit=500"))
-    photos = [_photo(r) for r in rows]
-    if images_only:
-        photos = [p for p in photos if p.extra.get("subtype") == "image"]
-    sort = info["sort"]
-    if sort == "customAsc":
-        photos.sort(key=lambda p: p.order or "")
-    elif sort == "captureDateDesc":
-        photos.sort(key=lambda p: p.captured or "", reverse=True)
-    else:
-        photos.sort(key=lambda p: p.captured or "")
-    return photos
+    """Photos of an album in the album's own order, as `lr_mcp.catalog.album_assets` sorts them: the
+    custom order when the album uses one (photos without an order key last), else by capture date."""
+    try:
+        entries = catalog.album_assets(album_id, images_only)
+    except LrError as e:
+        if e.status == 404:
+            raise _not_found(album_id) from None
+        raise
+    return [_photo(e["asset"], e["order"]) for e in entries]
 
 
 def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", force: bool = False,
@@ -180,10 +111,12 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
     An index entry written by zinegen 0.2.0 has no `edited_at`; it still counts as current while its
     `changed_at` matches, and is then upgraded in place. Returns the summary {downloaded, skipped, errors}.
 
-    Each photo gets one `lr.rendition` call: lr-mcp already retries a GET on dropped connections and
-    429/502/503/504. The one case retried here is a 2560/fullsize rendition that lr-mcp asked Lightroom to
-    generate and that was not ready by the end of its polling, or whose generate request (a POST, which
-    lr-mcp never retries) was refused with 429/5xx; see `_retry_rendition`.
+    Each photo gets one `lr.rendition` call, and a second one only when lr-mcp marks the failure
+    `retryable`: a 2560/fullsize rendition it asked Lightroom to generate that was not ready by the end
+    of its polling, or whose generate request (a POST, which lr-mcp sends once) got a 429, a 5xx or a
+    dropped connection. Nothing else is tried again: lr-mcp already retried a GET on dropped connections
+    and 429/502/503/504, and a 404 on a stored size (the photo is gone), a 403 or a 500 would fail the
+    same way.
     """
     if size not in ("640", "1280", "2048", "2560", "fullsize"):
         raise LrError("size must be one of 640, 1280, 2048, 2560, fullsize")
@@ -222,7 +155,7 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
             try:
                 data = lr.rendition(p.id, size)
             except LrError as e:
-                if attempt == 0 and _retry_rendition(size, e):
+                if attempt == 0 and e.retryable:
                     time.sleep(2)
                     continue
                 with lock:
@@ -244,20 +177,6 @@ def fetch_renditions(photos: list[Photo], dest: Path, size: str = "fullsize", fo
     with lock:
         save_index()
     return {"downloaded": len(jobs) - len(errors), "skipped": len(unique) - len(jobs), "errors": errors}
-
-
-# lr_mcp.client.rendition messages: "Rendition <kind> for <id> failed (<status>): ..." after polling, and
-# "Generating the <kind> rendition failed (<status>): ..." when the (unretried) generate POST is refused.
-_NOT_READY = re.compile(r"^Rendition \S+ for \S+ failed \(404\)|^Generating the \S+ rendition failed \((?:429|5\d\d)\)")
-
-
-def _retry_rendition(size: str, e: LrError) -> bool:
-    """True for the failures lr-mcp does not retry itself and a second call can fix: a generated size
-    (2560/fullsize) still not ready after lr-mcp's polling, or its generate request refused as busy.
-    Nothing else is retried here: dropped connections and 429/502/503/504 on a GET were already retried
-    by lr-mcp, and a 404 on a stored size (the photo is gone), a 403 or a 500 is retried by nobody, on
-    purpose, since another attempt would fail the same way."""
-    return size in ("2560", "fullsize") and bool(_NOT_READY.match(str(e)))
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
